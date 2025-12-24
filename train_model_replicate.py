@@ -136,9 +136,9 @@ rois_time_series, rois_labels = load_rois_data(sites)
 
 print("✅ Datos de ROIs cargados correctamente")
 
-print("6. Cargando datos de grafos...")
-graph_data = torch.load("graph_data.pt")
-print(f"Verificando datos del grafo del primer individuo{graph_data['PITT'][0][0].x.shape}")
+print("6. Cargando datos de matrices DFC...")
+lw_matrixes_data = torch.load((path_string / "lw_matrixes.pt"))
+
 print("✅ Datos de grafos cargados correctamente")
 
 print("7. Definiendo funciones auxiliares...")
@@ -575,7 +575,7 @@ def train_model(checkpoint_path='checkpoint.pth'):
             X.append(subject_ts)
     X_graphs = []
     for site in sites:
-        for subject_graphs in graph_data[site]:
+        for subject_graphs in lw_matrixes_data[site]:
             X_graphs.append(subject_graphs)
     y = np.concatenate([rois_labels[site] for site in sites])
 
