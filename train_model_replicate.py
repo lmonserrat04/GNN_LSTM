@@ -10,8 +10,7 @@ import shutil
 from torch_geometric.data import Data
 from memory_cleanup import (
     cleanup_batch_after_backward,  # ← Nombre actualizado
-    prepare_graph_batch,
-    diagnose_memory
+    prepare_graph_batch
 )
 
 print("=== INICIO DEL PROGRAMA ===")
@@ -41,15 +40,14 @@ pipeline = 'cpac'
 rois = 'rois_cc200'
 phenotypic = 'all_cases'
 
-ruta = r"C:\Users\JonKo\Documents\Leandro ia\ABIDE_pcp\cpac\filt_noglobal\data.csv"
-df = pd.read_csv(ruta)
-path_string = r"C:\Users\JonKo\Documents\Leandro ia\ABIDE_pcp\cpac\filt_noglobal"
-origin_path = Path(path_string)
 
-# ruta = "C:/Users/marle/temp_abide/ABIDE_pcp/cpac/filt_noglobal/data.csv"
-# df = pd.read_csv(ruta)
-# path_string = "C:/Users/marle/temp_abide/ABIDE_pcp/cpac/filt_noglobal"
-# origin_path = Path(path_string)
+BASE_DIR = Path.cwd()
+data_path = BASE_DIR / "ABIDE_pcp"/ "cpac" / "filt_noglobal"
+csv_path = data_path / "data.csv" 
+df = pd.read_csv(csv_path)
+origin_path = Path(data_path)
+
+
 
 
 # List of all available neuroimaging sites in the dataset
@@ -62,6 +60,7 @@ sites = all_sites
 # Designated site for external testing
 test_site = 'YALE'
 num_nodes = 200
+num_node_features = 200
 
 print("4. Definiendo función load_rois_data...")
 def load_rois_data(sites):
@@ -137,47 +136,10 @@ rois_time_series, rois_labels = load_rois_data(sites)
 print("✅ Datos de ROIs cargados correctamente")
 
 print("6. Cargando datos de matrices DFC...")
-lw_matrixes_data = torch.load((path_string / "lw_matrixes.pt"))
+lw_matrixes_data = torch.load((data_path / "lw_matrixes.pt"))
 
 print("✅ Datos de grafos cargados correctamente")
 
-print("7. Definiendo funciones auxiliares...")
-def create_starting_hidden_state_graph(num_nodes: int, hidden_channels: int):
-
-
-    return  torch.zeros((num_nodes,hidden_channels))
-
-def create_starting_cell_state(num_nodes:int, hidden_channels):
-
-    return torch.zeros((num_nodes, hidden_channels))
-
-def adjust_class_balance(indices, labels):
-    """
-    Adjusts the balance of classes by undersampling the majority class.
-    """
-    print("   ↳ Ajustando balance de clases")
-    # Class labels to consider
-    CLASS_LABELS = [0, 1]
-
-    # Separate indices by class
-    class_indices = {label: [idx for idx in indices if labels[idx] == label] for label in CLASS_LABELS}
-
-    # Determine the minimum class count
-    min_class_count = min(len(indices) for indices in class_indices.values())
-
-    # Adjust class balance by undersampling the majority class
-    balanced_indices = []
-    for label, class_list in class_indices.items():
-        if len(class_list) > min_class_count:
-            sampled_indices = np.random.choice(class_list, size=min_class_count, replace=False)
-            balanced_indices.extend(sampled_indices)
-        else:
-            balanced_indices.extend(class_list)
-
-    # Shuffle the indices for randomization
-    np.random.shuffle(balanced_indices)
-
-    return np.array(balanced_indices)
 
 print("8. Definiendo funciones de métricas...")
 from sklearn.metrics import confusion_matrix, roc_auc_score
@@ -213,182 +175,6 @@ def print_metrics(split, dataset_type, accuracy, sensitivity, precision, specifi
     print(f"  AUC-ROC Score: {auc * 100:.2f}%")
     print(f"  Confusion Matrix:\n{cm}")
 
-print("9. Definiendo clases del modelo...")
-class DGPool(nn.Module):
-    def __init__(self, input_dim, pool_ratio=0.5):
-        print("   ↳ Inicializando DGPool...")
-        super(DGPool, self).__init__()
-        self.pool_ratio = pool_ratio
-        self.trainable_vector_pooling = nn.Parameter(torch.randn(input_dim,1))
-
-    def forward(self, graph_hidden_state_last: Data):
-
-        x = graph_hidden_state_last.x  # [N, F]
-        num_nodes = x.size(0)
-        k = max(1, int(num_nodes * self.pool_ratio))
-
-        # Scores por nodo
-        norm2 = torch.norm(self.trainable_vector_pooling)
-        scores = x @ (self.trainable_vector_pooling / (norm2 + 1e-8))  # [N,1]
-
-        # Normalización (opcional depende del paper)
-        scores = (scores - scores.mean()) / (scores.std(unbiased=False) + 1e-8)
-
-        # Sigmoid para suavizar
-        sig_scores = torch.sigmoid(scores)  # [N,1]
-
-        # Escalar features
-        x_scaled = x * sig_scores
-
-        # Tomar top-k
-        _, indices = torch.topk(sig_scores.squeeze(), k=k)
-        new_x = x_scaled[indices]
-
-        # Crear nuevo grafo completamente conectado (como en el paper)
-        new_edge_index = self._fully_connect(indices, device=x.device)
-
-        # Pooling loss
-        pool_loss = ((sig_scores * (1 - sig_scores)).mean()).to(device)
-
-        return Data(x=new_x, edge_index=new_edge_index), pool_loss, scores
-
-    def _fully_connect(self, indices, device):
-        all_edge_index = [[], []]
-        for i, src in enumerate(indices):
-            for j, dst in enumerate(indices):
-                if i != j:
-                    all_edge_index[0].append(i)
-                    all_edge_index[1].append(j)
-        return torch.tensor(all_edge_index, dtype=torch.long, device=device)
-
-
-
-from torch_geometric.nn import GCNConv
-import torch.nn.functional as F
-from torch_geometric.nn import GraphConv
-
-class GNN_LSTM(nn.Module):
-    def __init__(self, node_feat_dim, hidden_channels = 64, pool_ratio = 0.5):
-        print("   ↳ Inicializando GNN_LSTM...")
-        super().__init__()
-
-        self.pool_ratio = pool_ratio
-        self.hidden_channels = hidden_channels
-        self.node_feat_dim = node_feat_dim
-
-        #GraphConv para la entrada (G_t)
-        self.input_gnn = GraphConv(node_feat_dim, hidden_channels)
-        self.forget_gnn = GraphConv(node_feat_dim, hidden_channels)
-        self.output_gnn = GraphConv(node_feat_dim, hidden_channels)
-        self.modulation_gnn = GraphConv(node_feat_dim, hidden_channels)
-
-        # GCN para el hidden state (H_{t-p})
-        self.input_gnn_hidden_state = GCNConv(hidden_channels, hidden_channels)
-        self.forget_gnn_hidden_state = GCNConv(hidden_channels, hidden_channels)
-        self.output_gnn_hidden_state = GCNConv(hidden_channels, hidden_channels)
-        self.modulation_gnn_hidden_state = GCNConv(hidden_channels, hidden_channels)
-
-        ## Añadir capa de normalización para estabilidad
-        self.layer_norm = nn.LayerNorm(hidden_channels * 2)
-
-        # Dynamic Graph Pooling
-        self.dg_pool = DGPool(hidden_channels, pool_ratio)
-
-        #LSTM para procesar datos raw
-        self.lstm_raw_fmri = nn.LSTM(
-            input_size=num_nodes,                   # número de ROIs
-            hidden_size=hidden_channels,      # tamaño del embedding temporal
-            num_layers=1,                     # una sola capa
-            batch_first=False
-        )
-
-        #MLP Clasificacion final
-        self.mlp_layer_1 = nn.Linear(hidden_channels * 2, hidden_channels)
-        self.mlp_layer_2 = nn.Linear(hidden_channels, 1)
-        self.mlp_dropout = nn.Dropout(p = 0.3)
-
-    def forward(self, graph_sequence, hidden_state, cell_state, time_series):
-        """
-        graph_sequence: lista de grafos del timestep t
-        hidden_state: tensor [num_nodes, hidden_channels]
-        cell_state: tensor [num_nodes, hidden_channels]
-        time_series: tensor para LSTM raw fMRI
-        """
-        hidden_state = hidden_state
-        cell_state = cell_state
-
-
-        # Normalización del hidden y cell
-        if torch.isnan(hidden_state).any() or torch.isnan(cell_state).any():
-            print("⚠️ NaN detectado en hidden o cell")
-
-        # Loop sobre timesteps
-        for graph in graph_sequence:
-            x, edge_index, edge_attr = graph.x, graph.edge_index, graph.edge_attr
-            # Normalizamos features del timestep
-            x = (x - x.mean(dim=0, keepdim=True)) / (x.std(dim=0, keepdim=True) + 1e-6)
-
-            # ==== GATES ====
-            input_gate = torch.sigmoid(
-                self.input_gnn(x, edge_index, edge_attr) +
-                self.input_gnn_hidden_state(hidden_state, edge_index)
-            )
-            forget_gate = torch.sigmoid(
-                self.forget_gnn(x, edge_index,edge_attr) +
-                self.forget_gnn_hidden_state(hidden_state, edge_index)
-            )
-            output_gate = torch.sigmoid(
-                self.output_gnn(x, edge_index,edge_attr) +
-                self.output_gnn_hidden_state(hidden_state, edge_index)
-            )
-            modulation = torch.relu(
-                self.modulation_gnn(x, edge_index,edge_attr) +
-                self.modulation_gnn_hidden_state(hidden_state, edge_index)
-            )
-
-            # ==== CELL STATE ====
-            cell_state = torch.tanh(input_gate * modulation + forget_gate * cell_state)
-
-            # ==== NEW HIDDEN STATE ====
-            hidden_state = output_gate * torch.tanh(cell_state)
-
-        # ==== DG-Pooling ====
-        pooled_graph, pool_loss, pool_scores = self.dg_pool(Data(x=hidden_state, edge_index=edge_index))
-        high_level_embeddings = torch.mean(pooled_graph.x, dim=0)
-
-        # ==== LSTM raw fMRI ====
-        low_level_embeddings = self.lstm_raw_time_series(time_series)
-
-        # ==== Fusion ====
-        fusion = torch.cat([high_level_embeddings, low_level_embeddings], dim=0)
-        fusion = self.layer_norm(fusion.unsqueeze(0)).squeeze(0)
-
-        # ==== Clasificación ====
-        pred = self.mlp_classiffier(fusion)
-
-        return pred, pool_scores, pool_loss
-
-
-    def lstm_raw_time_series(self,time_series_data):
-
-        _, (h_last,_) = self.lstm_raw_fmri(time_series_data)
-        h_last = h_last[-1].squeeze(0)  # [64]
-        return h_last
-
-    def mlp_classiffier(self,concat_embedding):
-
-        concat_embedding = F.relu(self.mlp_layer_1(concat_embedding))
-        concat_embedding = self.mlp_dropout(concat_embedding)
-        concat_embedding = self.mlp_layer_2(concat_embedding)
-        return concat_embedding
-
-    def compute_loss(self, prediction_batch, label_batch, pool_losses_batch, lambda_pool=0.5):
-
-        loss_ce = F.binary_cross_entropy_with_logits(prediction_batch, label_batch)
-        loss_pool = torch.mean(pool_losses_batch)
-        return loss_ce + lambda_pool * loss_pool
-
-torch.set_printoptions(threshold=torch.inf)
 
 print("10. Definiendo funciones de checkpoint...")
 
@@ -550,6 +336,227 @@ def load_checkpoint(model, optimizer, scheduler, path):
     return 0, 0, float('inf')
 
 
+print("7. Definiendo funciones auxiliares...")
+def create_starting_hidden_state_graph(num_nodes: int, hidden_channels: int):
+
+
+    return  torch.zeros((num_nodes,hidden_channels))
+
+def create_starting_cell_state(num_nodes:int, hidden_channels):
+
+    return torch.zeros((num_nodes, hidden_channels))
+
+
+print("9. Definiendo clases del modelo...")
+class DGPool(nn.Module):
+    def __init__(self, input_dim, pool_ratio):
+        print("   ↳ Inicializando DGPool...")
+        super(DGPool, self).__init__()
+        self.pool_ratio = pool_ratio
+        self.trainable_vector_pooling = nn.Parameter(torch.randn(input_dim,1))
+
+    def forward(self, lw_matrix_hidden_state_last):
+        """
+        Args:
+            lw_matrix_hidden_state_last (torch.Tensor): Matriz de features nodales del último
+                paso temporal del procesamiento GNN-LSTM. Forma: [N, F] donde N es el número 
+                de nodos y F es la dimensión de features (hidden_channels).
+    
+        Returns:
+            tuple: Una tupla de 3 elementos conteniendo:
+                - new_x (torch.Tensor): Features nodales agrupadas de los top-k nodos. Forma: [k, F]
+                - pool_loss (torch.Tensor): Pérdida de regularización que fomenta diversidad de scores. Tensor escalar.
+                - scores (torch.Tensor): Scores sigmoid crudos de todos los nodos antes de la selección.
+                    Forma: [N, 1]. Usado para análisis/visualización.
+
+        """
+
+        x = lw_matrix_hidden_state_last # [N, F]
+        num_nodes = x.size(0)
+        k = max(1, int(num_nodes * self.pool_ratio))
+
+        # Scores por nodo
+        norm2 = torch.norm(self.trainable_vector_pooling)
+        scores = x @ (self.trainable_vector_pooling / (norm2 + 1e-8))  # [N,1]
+
+        # Normalización (opcional depende del paper)
+        scores = (scores - scores.mean()) / (scores.std(unbiased=False) + 1e-8)
+
+        # Sigmoid para suavizar
+        sig_scores = torch.sigmoid(scores)  # [N,1]
+
+        # Escalar features
+        x_scaled = x * sig_scores
+
+        # Tomar top-k
+        _, indices = torch.topk(sig_scores.squeeze(), k=k)
+        new_x = x_scaled[indices]
+
+        # # Crear nuevo grafo completamente conectado (como en el paper)
+        # new_edge_index = self._fully_connect(indices, device=x.device)
+
+
+        # Pooling loss
+        pool_loss = ((sig_scores * (1 - sig_scores)).mean()).to(device)
+
+        return new_x, pool_loss
+    
+
+from torch_geometric.nn import GCNConv
+import torch.nn.functional as F
+from torch_geometric.nn import GraphConv
+
+class GNN_LSTM(nn.Module):
+    def __init__(self, num_node_features, hidden_channels = 64, pool_ratio = 0.15):
+        print("   ↳ Inicializando GNN_LSTM...")
+        super().__init__()
+
+        self.pool_ratio = pool_ratio
+        self.hidden_channels = hidden_channels
+        self.node_feat_dim = num_node_features
+
+        #GraphConv para la entrada (G_t)
+        self.input_gnn = GCNConv(num_node_features, hidden_channels)
+        self.forget_gnn = GCNConv(num_node_features, hidden_channels)
+        self.output_gnn = GCNConv(num_node_features, hidden_channels)
+        self.modulation_gnn = GCNConv(num_node_features, hidden_channels)
+
+        # GCN para el hidden state (H_{t-p})
+        self.input_gnn_hidden_state = GCNConv(hidden_channels, hidden_channels)
+        self.forget_gnn_hidden_state = GCNConv(hidden_channels, hidden_channels)
+        self.output_gnn_hidden_state = GCNConv(hidden_channels, hidden_channels)
+        self.modulation_gnn_hidden_state = GCNConv(hidden_channels, hidden_channels)
+
+        ## Añadir capa de normalización para estabilidad
+        self.layer_norm = nn.LayerNorm(hidden_channels * 2)
+
+        # Dynamic Graph Pooling
+        self.dg_pool = DGPool(hidden_channels, pool_ratio)
+
+        #LSTM para procesar datos raw
+        self.lstm_raw_fmri = nn.LSTM(
+            input_size=num_nodes,                   # número de ROIs
+            hidden_size=hidden_channels,      # tamaño del embedding temporal
+            num_layers=1,                     # una sola capa
+            batch_first=False
+        )
+
+        #MLP Clasificacion final
+        self.mlp_layer_1 = nn.Linear(hidden_channels * 2, hidden_channels)
+        self.mlp_layer_2 = nn.Linear(hidden_channels, 1)
+        self.mlp_dropout = nn.Dropout(p = 0.3)
+
+
+        
+
+    def forward(self, lw_matrixes_sequence,edge_index , hidden_state, cell_state, time_series):
+        """
+        Args:
+        lw_matrixes_sequence (list): Lista de tensores representando la secuencia temporal
+            de matrices de conectividad funcional. Cada elemento tiene forma [N, F] donde
+            N = num_nodes y F = num_node_features.
+
+        edge_index (torch.Tensor): Índices de aristas del grafo completamente conectado.
+            Forma: [2, E] donde E es el número de aristas. Se reutiliza para todos los timesteps.
+
+        hidden_state (torch.Tensor): Estado oculto inicial del GNN-LSTM. Forma: [N, hidden_channels].
+            Típicamente inicializado con zeros al inicio de cada sujeto.
+        cell_state (torch.Tensor): Estado de celda inicial del GNN-LSTM. Forma: [N, hidden_channels].
+            Típicamente inicializado con zeros al inicio de cada sujeto.
+        time_series (torch.Tensor): Serie temporal completa de fMRI raw del sujeto.
+            Forma: [T, N] donde T = timepoints (~140-200) y N = num_nodes (200 ROIs).
+
+             
+        Returns:
+            tuple: Una tupla de 3 elementos conteniendo:
+                - pred (torch.Tensor): Logit de predicción binaria (antes de sigmoid). 
+                    
+                - pool_loss (torch.Tensor): Pérdida de regularización del pooling dinámico.
+        """
+        hidden_state = hidden_state
+        cell_state = cell_state
+
+
+        # Normalización del hidden y cell
+        if torch.isnan(hidden_state).any() or torch.isnan(cell_state).any():
+            print("⚠️ NaN detectado en hidden o cell")
+
+
+        # Por cada matriz lw de la ventana en el tiempo t de un individuo
+        for m in lw_matrixes_sequence:
+            x, edge_index = m , edge_index
+            # Normalizamos features del timestep
+            x = (x - x.mean(dim=0, keepdim=True)) / (x.std(dim=0, keepdim=True) + 1e-6)
+
+            # ==== GATES ====
+            input_gate = torch.sigmoid(
+                self.input_gnn(x, edge_index) +
+                self.input_gnn_hidden_state(hidden_state, edge_index)
+            )
+            forget_gate = torch.sigmoid(
+                self.forget_gnn(x, edge_index) +
+                self.forget_gnn_hidden_state(hidden_state, edge_index)
+            )
+            output_gate = torch.sigmoid(
+                self.output_gnn(x, edge_index) +
+                self.output_gnn_hidden_state(hidden_state, edge_index)
+            )
+            modulation = torch.relu(
+                self.modulation_gnn(x, edge_index) +
+                self.modulation_gnn_hidden_state(hidden_state, edge_index)
+            )
+
+            # ==== CELL STATE ====
+            cell_state = torch.tanh(input_gate * modulation + forget_gate * cell_state)
+
+            # ==== NEW HIDDEN STATE ====
+            hidden_state = output_gate * torch.tanh(cell_state)
+
+        # ==== DG-Pooling ====
+        pooled_graph, pool_loss = self.dg_pool(hidden_state)  # [N, hidden_channels] → [k, hidden_channels]
+        high_level_embeddings = torch.mean(pooled_graph, dim=0)  # [k, hidden_channels] → [hidden_channels]
+
+        # ==== LSTM raw fMRI ====
+        low_level_embeddings = self.lstm_raw_time_series(time_series)  # [T, N] → [hidden_channels]
+
+        # ==== Fusión ====
+        fusion = torch.cat([high_level_embeddings, low_level_embeddings], dim=0)  # [hidden_channels] + [hidden_channels] → [hidden_channels * 2]
+        fusion = self.layer_norm(fusion.unsqueeze(0)).squeeze(0)  # [hidden_channels * 2] → [1, hidden_channels * 2] → [hidden_channels * 2]
+
+        # ==== Clasificación ====
+        pred = self.mlp_classiffier(fusion)  # [hidden_channels * 2] → [1]
+        return pred, pool_loss
+
+
+    def lstm_raw_time_series(self,time_series_data):
+
+        _, (h_last,_) = self.lstm_raw_fmri(time_series_data)
+        h_last = h_last[-1].squeeze(0)  # [64]
+        return h_last
+
+    def mlp_classiffier(self,concat_embedding):
+
+        concat_embedding = F.relu(self.mlp_layer_1(concat_embedding))
+        concat_embedding = self.mlp_dropout(concat_embedding)
+        concat_embedding = self.mlp_layer_2(concat_embedding)
+        return concat_embedding
+
+    def compute_loss(self, prediction_batch, label_batch, pool_losses_batch, lambda_pool=0.5):
+
+        loss_ce = F.binary_cross_entropy_with_logits(prediction_batch, label_batch)
+        loss_pool = torch.mean(pool_losses_batch)
+        return loss_ce + lambda_pool * loss_pool
+
+torch.set_printoptions(threshold=torch.inf)
+
+
+def get_edge_indexes_fully_connected():
+    idx = torch.arange(len(num_nodes), device=device)
+    edge_index = torch.cartesian_prod(idx, idx).t()
+    return edge_index[:, edge_index[0] != edge_index[1]]
+
+
+
 print("11. Definiendo función de entrenamiento...")
 from sklearn.model_selection import train_test_split
 from torch.optim.lr_scheduler import StepLR
@@ -573,10 +580,12 @@ def train_model(checkpoint_path='checkpoint.pth'):
     for site in sites:
         for subject_ts in rois_time_series[site]:
             X.append(subject_ts)
-    X_graphs = []
+            
+    X_lw_matrixes = []
     for site in sites:
         for subject_graphs in lw_matrixes_data[site]:
-            X_graphs.append(subject_graphs)
+            X_lw_matrixes.append(subject_graphs)
+
     y = np.concatenate([rois_labels[site] for site in sites])
 
     indices = np.arange(len(X))
@@ -589,7 +598,7 @@ def train_model(checkpoint_path='checkpoint.pth'):
     )
 
     print("13. Inicializando modelo y optimizador...")
-    gnn_lstm = GNN_LSTM(node_feat_dim=7).to(device)
+    gnn_lstm = GNN_LSTM(num_node_features).to(device)
     optimizer = torch.optim.Adam(gnn_lstm.parameters(), lr=1e-3, weight_decay=0.05)
     scheduler = StepLR(optimizer, step_size=20, gamma=0.4)
 
@@ -605,12 +614,15 @@ def train_model(checkpoint_path='checkpoint.pth'):
     starting_hidden_state = create_starting_hidden_state_graph(num_nodes, gnn_lstm.hidden_channels).to(device)
     starting_cell_state = create_starting_cell_state(num_nodes, gnn_lstm.hidden_channels).to(device)
 
+    # Edge index para features nodales
+    edge_index = get_edge_indexes_fully_connected()
+
     # 🔥 SNAPSHOT DESPUÉS DE INICIALIZAR ESTADOS
     monitor.snapshot("ESTADOS_INICIALES_CREADOS")
     monitor.compare_snapshots()
 
     n_epochs_baseline = 60
-    batch_size = 32
+    batch_size = 16
 
 
     start_epoch = 0
@@ -653,9 +665,11 @@ def train_model(checkpoint_path='checkpoint.pth'):
                 X_tensors[idx].detach().clone().to(device)
                 for idx in idxs_for_batch
             ]
-            graph_sequence_batch = prepare_graph_batch(
-                X_graphs, idxs_for_batch, device
+
+            lw_matrixes_sequence_batch = prepare_graph_batch(
+                X_lw_matrixes, idxs_for_batch, device
             )
+
             labels_batch = y_tensor[idxs_for_batch]
 
             # # 🔥 SNAPSHOT DESPUÉS DE CARGAR DATOS
@@ -663,7 +677,7 @@ def train_model(checkpoint_path='checkpoint.pth'):
 
             # Mover device
             time_series_batch = [ts.to(device) for ts in time_series_batch]
-            graph_sequence_batch = [[g.to(device) for g in subject_graphs] for subject_graphs in graph_sequence_batch]
+            lw_matrixes_sequence_batch = [[g.to(device) for g in subject_lw_matrixes] for subject_lw_matrixes in lw_matrixes_sequence_batch]
             labels_batch = labels_batch.to(device)
 
             # # 🔥 SNAPSHOT DESPUÉS DE MOVER A GPU
@@ -672,13 +686,14 @@ def train_model(checkpoint_path='checkpoint.pth'):
             preds_batch = []
             pool_losses_batch = []
 
-            for j, (time_series, graph_sequence, label) in enumerate(zip(time_series_batch, graph_sequence_batch, labels_batch)):
+            for j, (time_series, lw_matrixes_sequence, _) in enumerate(zip(time_series_batch, lw_matrixes_sequence_batch, labels_batch)):
                 h = starting_hidden_state.detach().clone()
                 c = starting_cell_state.detach().clone()
 
                 # Forward pass
-                pred, _, pool_loss = gnn_lstm(
-                    graph_sequence=graph_sequence,
+                pred, pool_loss = gnn_lstm(
+                    lw_matrixes_sequence=lw_matrixes_sequence,
+                    edge_index = edge_index,
                     hidden_state=h,
                     cell_state=c,
                     time_series=time_series
@@ -741,7 +756,7 @@ def train_model(checkpoint_path='checkpoint.pth'):
             # ─────────────────────────────────────────────────────────────
             cleanup_batch_after_backward(
                 time_series_batch=time_series_batch,
-                graph_sequence_batch=graph_sequence_batch,
+                graph_sequence_batch=lw_matrixes_sequence_batch,
                 preds_batch=preds_batch,
                 pool_losses_batch=pool_losses_batch,
                 labels_batch=labels_batch,
