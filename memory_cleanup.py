@@ -7,58 +7,34 @@ from collections import Counter
 # FUNCIÓN PRINCIPAL: Limpieza completa DESPUÉS de backward
 # ============================================================================
 
-def cleanup_batch_after_backward(time_series_batch=None, graph_sequence_batch=None,
-                                 preds_batch=None, pool_losses_batch=None,
-                                 labels_batch=None, model=None, optimizer=None,
-                                 extra_vars=None):
+# VERSIÓN SIMPLIFICADA para tu caso:
+def cleanup_batch_simple(time_series_batch, lw_matrixes_sequence_batch, 
+                         preds_batch, pool_losses_batch, labels_batch,
+                         model, optimizer, extra_vars=None):
     """
-    Limpieza completa de un batch DESPUÉS de backward.
-
-    IMPORTANTE: Llamar DESPUÉS de loss.backward() y optimizer.step()
-
-    Args:
-        time_series_batch: Lista de tensores de series temporales
-        graph_sequence_batch: Lista de listas de Data objects (grafos)
-        preds_batch: Lista de predicciones
-        pool_losses_batch: Lista de pooling losses
-        labels_batch: Tensor de labels
-        model: Modelo de PyTorch
-        optimizer: Optimizador
-        extra_vars: Dict con variables adicionales a limpiar
+    Limpieza simple para listas de tensores (sin objetos Data)
     """
-
-    # 1. Limpiar variables individuales primero
+    # Limpiar variables extra
     if extra_vars:
-        for var_name, var in extra_vars.items():
+        for var in extra_vars.values():
             del var
-
-    if labels_batch is not None:
-        del labels_batch
-
-    # 2. Limpiar time_series_batch
-    if time_series_batch is not None:
-        _deep_clean_list(time_series_batch)
-
-    # 3. Limpiar graph_sequence_batch (el más crítico)
-    if graph_sequence_batch is not None:
-        _deep_clean_graph_batch(graph_sequence_batch)
-
-    # 4. Limpiar preds_batch
-    if preds_batch is not None:
-        _deep_clean_list(preds_batch)
-
-    # 5. Limpiar pool_losses_batch
-    if pool_losses_batch is not None:
-        _deep_clean_list(pool_losses_batch)
-
-    # 6. Limpiar gradientes del modelo
-    if model is not None and optimizer is not None:
-        cleanup_model_gradients(model, optimizer)
-
-    # 7. Garbage collection agresivo
-    _aggressive_gc()
-
-
+    
+    # Limpiar listas - Python las libera automáticamente
+    _deep_clean_list(time_series_batch)
+    _deep_clean_lw_matrixes_sequence_batch(lw_matrixes_sequence_batch)
+    _deep_clean_list(preds_batch)
+    _deep_clean_list(pool_losses_batch)
+    del labels_batch
+    
+    # Limpiar gradientes
+    optimizer.zero_grad(set_to_none=True)
+    for param in model.parameters():
+        param.grad = None
+    
+    # GC agresivo
+    import gc
+    gc.collect()
+    
 # ============================================================================
 # FUNCIÓN: Limpieza de gradientes del modelo
 # ============================================================================
@@ -90,33 +66,28 @@ def cleanup_model_gradients(model, optimizer):
 # FUNCIONES INTERNAS
 # ============================================================================
 
-def _deep_clean_graph_batch(graph_sequence_batch):
+def _deep_clean_lw_matrixes_sequence_batch(lw_matrixes_sequence_batch):
     """
-    Limpia profundamente una lista de secuencias de grafos.
-    Este es el paso más crítico para liberar edge_index y features.
+    Limpia profundamente una lista de secuencias de matrices lw.
+    
     """
-    while graph_sequence_batch:
-        subject_graphs = graph_sequence_batch.pop()
 
-        # Limpiar cada grafo del sujeto
-        while subject_graphs:
-            graph = subject_graphs.pop()
+    while lw_matrixes_sequence_batch:
+        lw_matrix_list = lw_matrixes_sequence_batch.pop()
 
-            # Eliminar atributos del Data object
-            if hasattr(graph, 'x'):
-                del graph.x
-            if hasattr(graph, 'edge_index'):
-                del graph.edge_index
-            if hasattr(graph, 'edge_attr'):
-                del graph.edge_attr
-            if hasattr(graph, 'batch'):
-                del graph.batch
+        while lw_matrix_list:
+            lw = lw_matrix_list.pop()
 
-            del graph
+            del lw
+        
+        del lw_matrix_list
+    
+    del lw_matrixes_sequence_batch
 
-        del subject_graphs
+            
 
-    del graph_sequence_batch
+
+    
 
 
 def _deep_clean_list(lst):
@@ -156,36 +127,36 @@ def _aggressive_gc():
 # FUNCIÓN: Preparar grafos con .detach()
 # ============================================================================
 
-def prepare_graph_batch(X_graphs, idxs_for_batch, device):
-    """
-    Prepara un batch de grafos con .detach() para evitar memory leaks.
+# def prepare_graph_batch(X_lw_matrixes, idxs_for_batch, device):
+#     """
+#     Prepara un batch de grafos con .detach() para evitar memory leaks.
 
-    Args:
-        X_graphs: Lista completa de grafos del dataset
-        idxs_for_batch: Índices del batch actual
-        device: Device de PyTorch (cuda o cpu)
+#     Args:
+#         X_lw_matrixes: Lista completa de grafos del dataset
+#         idxs_for_batch: Índices del batch actual
+#         device: Device de PyTorch (cuda o cpu)
 
-    Returns:
-        Lista de listas de Data objects preparados
-    """
-    from torch_geometric.data import Data
+#     Returns:
+#         Lista de listas de Data objects preparados
+#     """
+#     from torch_geometric.data import Data
 
-    graph_sequence_batch = []
+#     lw_matrixes_sequence_batch = []
 
-    for idx in idxs_for_batch:
-        subject_graphs = []
+#     for idx in idxs_for_batch:
+#         subject_graphs = []
 
-        for g in X_graphs[idx]:
-            # CRÍTICO: .detach() para romper referencias
-            new_graph = Data(
-                x=g.x.detach().clone().to(device),
-                edge_index=g.edge_index.detach().clone().to(device)
-            )
-            subject_graphs.append(new_graph)
+#         for g in X_lw_matrixes[idx]:
+#             # CRÍTICO: .detach() para romper referencias
+#             new_graph = Data(
+#                 x=g.x.detach().clone().to(device),
+#                 edge_index=g.edge_index.detach().clone().to(device)
+#             )
+#             subject_graphs.append(new_graph)
 
-        graph_sequence_batch.append(subject_graphs)
+#         lw_matrixes_sequence_batch.append(subject_graphs)
 
-    return graph_sequence_batch
+#     return lw_matrixes_sequence_batch
 
 
 # ============================================================================
@@ -338,7 +309,7 @@ def verify_cleanup(expected_tensors=200, warn=True):
 
 __version__ = "2.0.0"
 __all__ = [
-    'cleanup_batch_after_backward',
+    'cleanup_batch_simple',
     'cleanup_model_gradients',
     'prepare_graph_batch',
     'diagnose_memory',

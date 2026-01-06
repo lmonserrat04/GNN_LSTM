@@ -8,10 +8,7 @@ import tempfile
 import shutil
 
 from torch_geometric.data import Data
-from memory_cleanup import (
-    cleanup_batch_after_backward,  # ← Nombre actualizado
-    prepare_graph_batch
-)
+from memory_cleanup import cleanup_batch_simple
 
 print("=== INICIO DEL PROGRAMA ===")
 print("1. Importando librerías...")
@@ -139,41 +136,6 @@ print("6. Cargando datos de matrices DFC...")
 lw_matrixes_data = torch.load((data_path / "lw_matrixes.pt"))
 
 print("✅ Datos de grafos cargados correctamente")
-
-
-print("8. Definiendo funciones de métricas...")
-from sklearn.metrics import confusion_matrix, roc_auc_score
-
-def calculate_metrics(y_true, y_pred, y_pred_prob):
-    """
-    Calculate key evaluation metrics for binary classification tasks.
-    """
-    print("   ↳ Calculando métricas...")
-    # Compute confusion matrix and unpack values
-    cm = confusion_matrix(y_true, y_pred)
-    tn, fp, fn, tp = cm.ravel()
-
-    # Calculate metrics with safeguards against division by zero
-    accuracy = (tp + tn) / (tp + tn + fp + fn)
-    sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
-    auc = roc_auc_score(y_true, y_pred_prob)
-
-    return accuracy, sensitivity, precision, specificity, auc, cm
-
-def print_metrics(split, dataset_type, accuracy, sensitivity, precision, specificity, auc, cm):
-    """
-    Display evaluation metrics for a specific data split and dataset type.
-    """
-    print(f"   ↳ Mostrando métricas para {dataset_type}...")
-    print(f"\n{dataset_type.capitalize()} Metrics for Split {split + 1}:")
-    print(f"  Accuracy: {accuracy * 100:.2f}%")
-    print(f"  Sensitivity (Recall): {sensitivity * 100:.2f}%")
-    print(f"  Precision: {precision * 100:.2f}%")
-    print(f"  Specificity: {specificity * 100:.2f}%")
-    print(f"  AUC-ROC Score: {auc * 100:.2f}%")
-    print(f"  Confusion Matrix:\n{cm}")
 
 
 print("10. Definiendo funciones de checkpoint...")
@@ -340,11 +302,11 @@ print("7. Definiendo funciones auxiliares...")
 def create_starting_hidden_state_graph(num_nodes: int, hidden_channels: int):
 
 
-    return  torch.zeros((num_nodes,hidden_channels))
+    return  torch.zeros((num_nodes,hidden_channels), dtype=torch.float64)
 
 def create_starting_cell_state(num_nodes:int, hidden_channels):
 
-    return torch.zeros((num_nodes, hidden_channels))
+    return torch.zeros((num_nodes, hidden_channels),dtype=torch.float64)
 
 
 print("9. Definiendo clases del modelo...")
@@ -473,8 +435,7 @@ class GNN_LSTM(nn.Module):
                     
                 - pool_loss (torch.Tensor): Pérdida de regularización del pooling dinámico.
         """
-        hidden_state = hidden_state
-        cell_state = cell_state
+        
 
 
         # Normalización del hidden y cell
@@ -525,6 +486,7 @@ class GNN_LSTM(nn.Module):
 
         # ==== Clasificación ====
         pred = self.mlp_classiffier(fusion)  # [hidden_channels * 2] → [1]
+
         return pred, pool_loss
 
 
@@ -551,7 +513,7 @@ torch.set_printoptions(threshold=torch.inf)
 
 
 def get_edge_indexes_fully_connected():
-    idx = torch.arange(len(num_nodes), device=device)
+    idx = torch.arange(num_nodes, device=device, dtype = torch.long)
     edge_index = torch.cartesian_prod(idx, idx).t()
     return edge_index[:, edge_index[0] != edge_index[1]]
 
@@ -563,7 +525,29 @@ from torch.optim.lr_scheduler import StepLR
 import time
 
 ###################################################################
-
+class EarlyStopping:
+    def __init__(self, patience=20, min_delta=0.001):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.best_loss = float('inf')
+        self.counter = 0
+        
+    def __call__(self, model, val_loss, checkpoint_path='best_model.pth'):
+        if val_loss < self.best_loss - self.min_delta:
+            self.best_loss = val_loss
+            self.counter = 0
+            torch.save(model.state_dict(), checkpoint_path)
+            print(f"✅ Nuevo mejor modelo guardado (loss: {val_loss:.4f})")
+            return False
+        else:
+            self.counter += 1
+            print(f"⚠️  Sin mejora: {self.counter}/{self.patience}")
+            if self.counter >= self.patience:
+                model.load_state_dict(torch.load(checkpoint_path))
+                print(f"🔙 Restaurando mejor modelo (loss: {self.best_loss:.4f})")
+                return True
+        return False
+    
 ###################################################################
 
 
@@ -581,10 +565,7 @@ def train_model(checkpoint_path='checkpoint.pth'):
         for subject_ts in rois_time_series[site]:
             X.append(subject_ts)
             
-    X_lw_matrixes = []
-    for site in sites:
-        for subject_graphs in lw_matrixes_data[site]:
-            X_lw_matrixes.append(subject_graphs)
+    X_lw_matrixes = lw_matrixes_data
 
     y = np.concatenate([rois_labels[site] for site in sites])
 
@@ -598,17 +579,17 @@ def train_model(checkpoint_path='checkpoint.pth'):
     )
 
     print("13. Inicializando modelo y optimizador...")
-    gnn_lstm = GNN_LSTM(num_node_features).to(device)
+    gnn_lstm = GNN_LSTM(num_node_features).to(device).double()
     optimizer = torch.optim.Adam(gnn_lstm.parameters(), lr=1e-3, weight_decay=0.05)
     scheduler = StepLR(optimizer, step_size=20, gamma=0.4)
 
     # 🔥 SNAPSHOT DESPUÉS DE CREAR MODELO
-    monitor.snapshot("MODELO_CREADO")
-    monitor.compare_snapshots()
+    # monitor.snapshot("MODELO_CREADO")
+    # monitor.compare_snapshots()
 
     # Preprocesar todo antes del loop
-    X_tensors = [torch.tensor(ts, dtype=torch.float32) for ts in X]
-    y_tensor = torch.tensor(y, dtype=torch.float32)
+    X_tensors = [torch.tensor(ts, dtype=torch.float64) for ts in X]
+    y_tensor = torch.tensor(y, dtype=torch.float64)
 
     # Estados iniciales en device
     starting_hidden_state = create_starting_hidden_state_graph(num_nodes, gnn_lstm.hidden_channels).to(device)
@@ -618,10 +599,11 @@ def train_model(checkpoint_path='checkpoint.pth'):
     edge_index = get_edge_indexes_fully_connected()
 
     # 🔥 SNAPSHOT DESPUÉS DE INICIALIZAR ESTADOS
-    monitor.snapshot("ESTADOS_INICIALES_CREADOS")
-    monitor.compare_snapshots()
+    # monitor.snapshot("ESTADOS_INICIALES_CREADOS")
+    # monitor.compare_snapshots()
 
-    n_epochs_baseline = 60
+    n_epochs_baseline = 150
+    
     batch_size = 16
 
 
@@ -633,11 +615,14 @@ def train_model(checkpoint_path='checkpoint.pth'):
 
     start_epoch, last_batch_index, _ = load_checkpoint(gnn_lstm, optimizer, scheduler, checkpoint_path)
 
+    # Early Stopping
+    early_stopping = EarlyStopping(patience=20)
+
     print("14. Iniciando ciclo de entrenamiento...")
 
     # Entrenamiento
     for epoch in range(start_epoch, n_epochs_baseline):
-        print(f"\n🎯 INICIANDO ÉPOCA {epoch}/{n_epochs_baseline}")
+        print(f"\n🎯 INICIANDO ÉPOCA {epoch + 1}/{n_epochs_baseline}")
 
         # # 🔥 SNAPSHOT AL INICIO DE ÉPOCA
         # monitor.snapshot(f"EPOCH_{epoch}_START")
@@ -651,13 +636,18 @@ def train_model(checkpoint_path='checkpoint.pth'):
 
         idxs_for_epoch = np.random.choice(idx_train, size=len(idx_train), replace=False)
 
+
+         # # 🔥 SNAPSHOT PRE-BATCH
+        #monitor_batch_memory(monitor, batch_count, epoch, "PRE_BATCH")
+        
         for i in range(last_batch_index * batch_size, len(idxs_for_epoch), batch_size):
             current_batch_index = i // batch_size
-            print(f"\n   📦 Procesando batch {batch_count}...")
+            print(f"Iniciando procesamiento de batch {current_batch_index + 1} en Epoca: {epoch + 1} ")
+            
+            
             inicio_batch = time.time()
 
-            # # 🔥 SNAPSHOT PRE-BATCH
-            # monitor_batch_memory(monitor, batch_count, epoch, "PRE")
+           
 
 
             idxs_for_batch = idxs_for_epoch[i:i+batch_size]
@@ -666,22 +656,20 @@ def train_model(checkpoint_path='checkpoint.pth'):
                 for idx in idxs_for_batch
             ]
 
-            lw_matrixes_sequence_batch = prepare_graph_batch(
-                X_lw_matrixes, idxs_for_batch, device
-            )
+            lw_matrixes_sequence_batch = [X_lw_matrixes[idx] for idx in idxs_for_batch]
 
             labels_batch = y_tensor[idxs_for_batch]
 
             # # 🔥 SNAPSHOT DESPUÉS DE CARGAR DATOS
-            # monitor.snapshot(f"E{epoch}_B{batch_count}_DATOS_CARGADOS")
+            
 
             # Mover device
             time_series_batch = [ts.to(device) for ts in time_series_batch]
-            lw_matrixes_sequence_batch = [[g.to(device) for g in subject_lw_matrixes] for subject_lw_matrixes in lw_matrixes_sequence_batch]
+            lw_matrixes_sequence_batch = [[m.to(device) for m in subject_lw_matrixes] for subject_lw_matrixes in lw_matrixes_sequence_batch]
             labels_batch = labels_batch.to(device)
 
             # # 🔥 SNAPSHOT DESPUÉS DE MOVER A GPU
-            # monitor.snapshot(f"E{epoch}_B{batch_count}_EN_GPU")
+            #monitor_batch_memory(monitor, batch_count, epoch, "DATOS_EN_GPU")
 
             preds_batch = []
             pool_losses_batch = []
@@ -692,7 +680,7 @@ def train_model(checkpoint_path='checkpoint.pth'):
 
                 # Forward pass
                 pred, pool_loss = gnn_lstm(
-                    lw_matrixes_sequence=lw_matrixes_sequence,
+                    lw_matrixes_sequence = lw_matrixes_sequence,
                     edge_index = edge_index,
                     hidden_state=h,
                     cell_state=c,
@@ -750,13 +738,15 @@ def train_model(checkpoint_path='checkpoint.pth'):
             # # Comparar PRE_BATCH con POST_BATCH
             # monitor.compare_snapshots(-8, -1)  # PRE vs POST_PRE_CLEANUP
 
+
+
             # Limpieza
             # ─────────────────────────────────────────────────────────────
             # ✅ AHORA SÍ: Limpieza DESPUÉS de backward
             # ─────────────────────────────────────────────────────────────
-            cleanup_batch_after_backward(
+            cleanup_batch_simple(
                 time_series_batch=time_series_batch,
-                graph_sequence_batch=lw_matrixes_sequence_batch,
+                lw_matrixes_sequence_batch=lw_matrixes_sequence_batch,
                 preds_batch=preds_batch,
                 pool_losses_batch=pool_losses_batch,
                 labels_batch=labels_batch,
@@ -772,7 +762,7 @@ def train_model(checkpoint_path='checkpoint.pth'):
             )
 
             # # 🔥 SNAPSHOT POST-LIMPIEZA
-            # monitor_batch_memory(monitor, batch_count-1, epoch, "POST_LIMPIEZA")
+            #monitor_batch_memory(monitor, batch_count-1, epoch, "POST_LIMPIEZA")
 
             # # 🔥 COMPARAR POST_PRE_CLEANUP vs POST_CLEANUP
             # print(f"\n🧹 EFECTIVIDAD DE LIMPIEZA:")
@@ -790,21 +780,16 @@ def train_model(checkpoint_path='checkpoint.pth'):
 
             new_loss = total_loss / max(1, batch_count)
 
-            # Reporte de loss y tiempo cada 5 batches
-            if batches_en_epoch % 5 == 0:
+            # Reporte de loss y tiempo cada x batches
+            if batches_en_epoch % 10 == 0:
                 print("\n" + "🔥"*40)
                 print(f"Loss= {new_loss:.4f}. ΔLoss = {(new_loss - avg_loss):.4f}")
-                print(f"Tiempo batch actual: {tiempo_batch:.2f}s")
-                print(f"Tiempo total época: {tiempo_total_epoch:.2f}s")
-                print(f"Tiempo promedio/batch: {tiempo_promedio_batch:.2f}s")
+               
                 print("🔥"*40 + "\n")
 
 
             avg_loss = new_loss
-            print(f"   ✅ Batch {batch_count-1} completado. Tiempo batch: {tiempo_batch:.2f}s, Promedio época: {tiempo_promedio_batch:.2f}s")
-
-
-
+            print(f"   ✅ Batch {batch_count + 1} completado - Tiempo: {tiempo_batch:.2f}s | Promedio por batch en la epoca: {tiempo_promedio_batch:.2f}s")
 
 
         scheduler.step()
@@ -826,22 +811,29 @@ def train_model(checkpoint_path='checkpoint.pth'):
         print(f"   Tiempo promedio por batch: {tiempo_promedio_epoch:.2f}s")
         print(f"   Batches procesados: {batches_completados_epoch}")
 
+        # Evaluación y Early Stopping
+        
+    
+        if early_stopping(gnn_lstm, avg_loss, 'best_model.pth'):
+            print(f"🛑 Early stopping en época {epoch}")
+            break
+
         # 🔥 REPORTE AL FINAL DE ÉPOCA
         print("\n" + "="*80)
         print(f"📊 REPORTE FIN DE ÉPOCA {epoch}")
         print("="*80)
         monitor.print_detailed_report()
-        monitor.snapshot(f"EPOCH_{epoch}_END")
+        monitor.snapshot(f"EPOCH_{epoch + 1}_END")
 
         # Comparar inicio vs fin de época
         epoch_start_idx = None
         for idx, snap in enumerate(monitor.snapshots):
-            if snap['label'] == f"EPOCH_{epoch}_START":
+            if snap['label'] == f"EPOCH_{epoch + 1}_START":
                 epoch_start_idx = idx
                 break
 
         if epoch_start_idx is not None:
-            print(f"\n🔍 COMPARACIÓN ÉPOCA {epoch}: INICIO vs FIN")
+            print(f"\n🔍 COMPARACIÓN ÉPOCA {epoch + 1}: INICIO vs FIN")
             monitor.compare_snapshots(epoch_start_idx, -1)
 
         # Reiniciar last_batch_index para la próxima época
@@ -850,8 +842,10 @@ def train_model(checkpoint_path='checkpoint.pth'):
     print("17. Guardando modelo final...")
     torch.save(gnn_lstm.state_dict(), 'modelo_final.pth')
     print("✅ Modelo final guardado como 'modelo_final.pth'")
-    print("=== ENTRENAMIENTO COMPLETADO ===")
 
+        
 print("16. Iniciando entrenamiento...")
 train_model('checkpoint.pth')
+
+print("=== ENTRENAMIENTO COMPLETADO ===")
 print("=== PROGRAMA FINALIZADO ===")
