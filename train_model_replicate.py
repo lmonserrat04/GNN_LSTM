@@ -359,14 +359,28 @@ class DGPool(nn.Module):
 
 
         # Pooling loss
-        pool_loss = ((sig_scores * (1 - sig_scores)).mean()).to(device)
+        # Ordenar scores descendente
+        sig_scores_sorted, _ = torch.sort(sig_scores.squeeze(), descending=True)
+
+        # Separar top-k y resto
+        topk_scores = sig_scores_sorted[:k]
+        rest_scores = sig_scores_sorted[k:]
+
+        # Evitar log(0)
+        eps = 1e-8
+
+        # Pooling loss según ecuación (20)
+        pool_loss = -(
+            torch.log(topk_scores + eps).sum() +
+            torch.log(1.0 - rest_scores + eps).sum()
+        ) / num_nodes
 
         return new_x, pool_loss
     
 
 from torch_geometric.nn import GCNConv
 import torch.nn.functional as F
-from torch_geometric.nn import GraphConv
+
 
 class GNN_LSTM(nn.Module):
     def __init__(self, num_node_features, hidden_channels = 64, pool_ratio = 0.15):
@@ -444,10 +458,8 @@ class GNN_LSTM(nn.Module):
 
 
         # Por cada matriz lw de la ventana en el tiempo t de un individuo
-        for m in lw_matrixes_sequence:
-            x, edge_index = m , edge_index
-            # Normalizamos features del timestep
-            x = (x - x.mean(dim=0, keepdim=True)) / (x.std(dim=0, keepdim=True) + 1e-6)
+        for x in lw_matrixes_sequence:
+            
 
             # ==== GATES ====
             input_gate = torch.sigmoid(
