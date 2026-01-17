@@ -7,11 +7,11 @@ import os
 import tempfile
 import shutil
 
-from torch_geometric.data import Data
+
 from memory_cleanup import cleanup_batch_simple
 
 print("=== INICIO DEL PROGRAMA ===")
-print("1. Importando librerías...")
+print("1. Importando bibliotecas...")
 
 print("Torch version:", torch.__version__)
 print("CUDA available:", torch.cuda.is_available())
@@ -37,15 +37,11 @@ pipeline = 'cpac'
 rois = 'rois_cc200'
 phenotypic = 'all_cases'
 
-
 BASE_DIR = Path.cwd()
 data_path = BASE_DIR / "ABIDE_pcp"/ "cpac" / "filt_noglobal"
 csv_path = data_path / "data.csv" 
 df = pd.read_csv(csv_path)
 origin_path = Path(data_path)
-
-
-
 
 # List of all available neuroimaging sites in the dataset
 all_sites = df['SITE_ID'].unique()
@@ -137,6 +133,217 @@ lw_matrixes_data = torch.load((data_path / "lw_matrixes.pt"))
 
 print("✅ Datos de grafos cargados correctamente")
 
+print("7. Definiendo funciones auxiliares...")
+def create_starting_hidden_state_graph(num_nodes: int, hidden_channels: int):
+    return  torch.zeros((num_nodes,hidden_channels), dtype=torch.float64)
+
+def create_starting_cell_state(num_nodes:int, hidden_channels):
+    return torch.zeros((num_nodes, hidden_channels),dtype=torch.float64)
+
+print("8. Definiendo función get_edge_indexes_fully_connected...")
+def get_edge_indexes_fully_connected():
+    idx = torch.arange(num_nodes, device=device, dtype = torch.long)
+    edge_index = torch.cartesian_prod(idx, idx).t()
+    return edge_index[:, edge_index[0] != edge_index[1]]
+
+print("9. Definiendo clases del modelo...")
+class DGPool(nn.Module):
+    def __init__(self, input_dim, pool_ratio):
+        print("   ↳ Inicializando DGPool...")
+        super(DGPool, self).__init__()
+        self.pool_ratio = pool_ratio
+        self.trainable_vector_pooling = nn.Parameter(torch.randn(input_dim,1))
+
+    def forward(self, lw_matrix_hidden_state_last):
+        """
+        Args:
+            lw_matrix_hidden_state_last (torch.Tensor): Matriz de features nodales del último
+                paso temporal del procesamiento GNN-LSTM. Forma: [N, F] donde N es el número 
+                de nodos y F es la dimensión de features (hidden_channels).
+    
+        Returns:
+            tuple: Una tupla de 3 elementos conteniendo:
+                - new_x (torch.Tensor): Features nodales agrupadas de los top-k nodos. Forma: [k, F]
+                - pool_loss (torch.Tensor): Pérdida de regularización que fomenta diversidad de scores. Tensor escalar.
+                - scores (torch.Tensor): Scores sigmoid crudos de todos los nodos antes de la selección.
+                    Forma: [N, 1]. Usado para análisis/visualización.
+
+        """
+
+        x = lw_matrix_hidden_state_last # [N, F]
+        num_nodes = x.size(0)
+        k = max(1, int(num_nodes * self.pool_ratio))
+
+        # Scores por nodo
+        norm2 = torch.norm(self.trainable_vector_pooling)
+        scores = x @ (self.trainable_vector_pooling / (norm2 + 1e-8))  # [N,1]
+
+        # Normalización (opcional depende del paper)
+        scores = (scores - scores.mean()) / (scores.std(unbiased=False) + 1e-8)
+
+        # Sigmoid para suavizar
+        sig_scores = torch.sigmoid(scores)  # [N,1]
+
+        # Escalar features
+        x_scaled = x * sig_scores
+
+        # Tomar top-k
+        _, indices = torch.topk(sig_scores.squeeze(), k=k)
+        new_x = x_scaled[indices]
+
+        # Pooling loss
+        # Ordenar scores descendente
+        sig_scores_sorted, _ = torch.sort(sig_scores.squeeze(), descending=True)
+
+        # Separar top-k y resto
+        topk_scores = sig_scores_sorted[:k]
+        rest_scores = sig_scores_sorted[k:]
+
+        # Evitar log(0)
+        eps = 1e-8
+
+        # Pooling loss según ecuación (20)
+        pool_loss = -(
+            torch.log(topk_scores + eps).sum() +
+            torch.log(1.0 - rest_scores + eps).sum()
+        ) / num_nodes
+
+        return new_x, pool_loss
+    
+
+from torch_geometric.nn import GCNConv
+import torch.nn.functional as F
+
+
+class GNN_LSTM(nn.Module):
+    def __init__(self, num_node_features, hidden_channels = 64, pool_ratio = 0.15):
+        print("   ↳ Inicializando GNN_LSTM...")
+        super().__init__()
+
+        self.pool_ratio = pool_ratio
+        self.hidden_channels = hidden_channels
+        self.node_feat_dim = num_node_features
+
+        #GCNConv para la entrada (G_t)
+        self.input_gnn = GCNConv(num_node_features, hidden_channels)
+        self.forget_gnn = GCNConv(num_node_features, hidden_channels)
+        self.output_gnn = GCNConv(num_node_features, hidden_channels)
+        self.modulation_gnn = GCNConv(num_node_features, hidden_channels)
+
+        # GCN para el hidden state (H_{t-p})
+        self.input_gnn_hidden_state = GCNConv(hidden_channels, hidden_channels)
+        self.forget_gnn_hidden_state = GCNConv(hidden_channels, hidden_channels)
+        self.output_gnn_hidden_state = GCNConv(hidden_channels, hidden_channels)
+        self.modulation_gnn_hidden_state = GCNConv(hidden_channels, hidden_channels)
+
+        ## Añadir capa de normalización para estabilidad
+        self.layer_norm = nn.LayerNorm(hidden_channels * 2)
+
+        # Dynamic Graph Pooling
+        self.dg_pool = DGPool(hidden_channels, pool_ratio)
+
+        #LSTM para procesar datos raw
+        self.lstm_raw_fmri = nn.LSTM(
+            input_size=num_nodes,                   # número de ROIs
+            hidden_size=hidden_channels,      # tamaño del embedding temporal
+            num_layers=1,                     # una sola capa
+            batch_first=False
+        )
+
+        #MLP Clasificacion final
+        self.mlp_layer_1 = nn.Linear(hidden_channels * 2, hidden_channels)
+        self.mlp_layer_2 = nn.Linear(hidden_channels, 1)
+        self.mlp_dropout = nn.Dropout(p = 0.3)
+
+    def forward(self, lw_matrixes_sequence,edge_index , hidden_state, cell_state, time_series):
+        """
+        Args:
+        lw_matrixes_sequence (list): Lista de tensores representando la secuencia temporal
+            de matrices de conectividad funcional. Cada elemento tiene forma [N, F] donde
+            N = num_nodes y F = num_node_features.
+
+        edge_index (torch.Tensor): Índices de aristas del grafo completamente conectado.
+            Forma: [2, E] donde E es el número de aristas. Se reutiliza para todos los timesteps.
+
+        hidden_state (torch.Tensor): Estado oculto inicial del GNN-LSTM. Forma: [N, hidden_channels].
+            Típicamente inicializado con zeros al inicio de cada sujeto.
+        cell_state (torch.Tensor): Estado de celda inicial del GNN-LSTM. Forma: [N, hidden_channels].
+            Típicamente inicializado con zeros al inicio de cada sujeto.
+        time_series (torch.Tensor): Serie temporal completa de fMRI raw del sujeto.
+            Forma: [T, N] donde T = timepoints (~140-200) y N = num_nodes (200 ROIs).
+
+             
+        Returns:
+            tuple: Una tupla de 3 elementos conteniendo:
+                - pred (torch.Tensor): Logit de predicción binaria (antes de sigmoid). 
+                    
+                - pool_loss (torch.Tensor): Pérdida de regularización del pooling dinámico.
+        """
+        
+        # Normalización del hidden y cell
+        if torch.isnan(hidden_state).any() or torch.isnan(cell_state).any():
+            print("⚠️ NaN detectado en hidden o cell")
+
+        # Por cada matriz lw de la ventana en el tiempo t de un individuo
+        for x in lw_matrixes_sequence:
+            
+            # ==== GATES ====
+            input_gate = torch.sigmoid(
+                self.input_gnn(x, edge_index) +
+                self.input_gnn_hidden_state(hidden_state, edge_index)
+            )
+            forget_gate = torch.sigmoid(
+                self.forget_gnn(x, edge_index) +
+                self.forget_gnn_hidden_state(hidden_state, edge_index)
+            )
+            output_gate = torch.sigmoid(
+                self.output_gnn(x, edge_index) +
+                self.output_gnn_hidden_state(hidden_state, edge_index)
+            )
+            modulation = torch.relu(
+                self.modulation_gnn(x, edge_index) +
+                self.modulation_gnn_hidden_state(hidden_state, edge_index)
+            )
+
+            # ==== CELL STATE ====
+            cell_state = torch.tanh(input_gate * modulation + forget_gate * cell_state)
+
+            # ==== NEW HIDDEN STATE ====
+            hidden_state = output_gate * torch.tanh(cell_state)
+
+        # ==== DG-Pooling ====
+        pooled_graph, pool_loss = self.dg_pool(hidden_state)  # [N, hidden_channels] → [k, hidden_channels]
+        high_level_embeddings = torch.mean(pooled_graph, dim=0)  # [k, hidden_channels] → [hidden_channels]
+
+        # ==== LSTM raw fMRI ====
+        low_level_embeddings = self.lstm_raw_time_series(time_series)  # [T, N] → [hidden_channels]
+
+        # ==== Fusión ====
+        fusion = torch.cat([high_level_embeddings, low_level_embeddings], dim=0)  # [hidden_channels] + [hidden_channels] → [hidden_channels * 2]
+        fusion = self.layer_norm(fusion.unsqueeze(0)).squeeze(0)  # [hidden_channels * 2] → [1, hidden_channels * 2] → [hidden_channels * 2]
+
+        # ==== Clasificación ====
+        pred = self.mlp_classiffier(fusion)  # [hidden_channels * 2] → [1]
+
+        return pred, pool_loss
+
+    def lstm_raw_time_series(self,time_series_data):
+        _, (h_last,_) = self.lstm_raw_fmri(time_series_data)
+        h_last = h_last[-1].squeeze(0)  # [64]
+        return h_last
+
+    def mlp_classiffier(self,concat_embedding):
+        concat_embedding = F.relu(self.mlp_layer_1(concat_embedding))
+        concat_embedding = self.mlp_dropout(concat_embedding)
+        concat_embedding = self.mlp_layer_2(concat_embedding)
+        return concat_embedding
+
+    def compute_loss(self, prediction_batch, label_batch, pool_losses_batch, lambda_pool=0.1):
+        loss_ce = F.binary_cross_entropy_with_logits(prediction_batch, label_batch)
+        loss_pool = torch.mean(pool_losses_batch)
+        return loss_ce + lambda_pool * loss_pool
+
+torch.set_printoptions(threshold=torch.inf)
 
 print("10. Definiendo funciones de checkpoint...")
 
@@ -188,7 +395,7 @@ def save_checkpoint(model, optimizer, scheduler, epoch, current_batch_index, los
         if os.path.exists(path):
             try:
                 shutil.copy2(path, backup_path)
-                print(f"   📁 Backup creado: {backup_path}")
+                print(f"   📋 Backup creado: {backup_path}")
             except Exception as e:
                 print(f"   ⚠️  No se pudo crear backup: {e}")
 
@@ -198,7 +405,7 @@ def save_checkpoint(model, optimizer, scheduler, epoch, current_batch_index, los
         # 6. Verificar que el archivo final existe y tiene tamaño
         if os.path.exists(path) and os.path.getsize(path) > 100:  # Mínimo 100 bytes
             print(f"   ✅ Checkpoint guardado exitosamente en época {epoch}, batch: {current_batch_index}")
-            print(f"   📊 Pérdida guardada: {loss:.6f}")
+            
         else:
             raise IOError("El archivo final no se creó correctamente")
 
@@ -297,246 +504,7 @@ def load_checkpoint(model, optimizer, scheduler, path):
 
     return 0, 0, float('inf')
 
-
-print("7. Definiendo funciones auxiliares...")
-def create_starting_hidden_state_graph(num_nodes: int, hidden_channels: int):
-
-
-    return  torch.zeros((num_nodes,hidden_channels), dtype=torch.float64)
-
-def create_starting_cell_state(num_nodes:int, hidden_channels):
-
-    return torch.zeros((num_nodes, hidden_channels),dtype=torch.float64)
-
-
-print("9. Definiendo clases del modelo...")
-class DGPool(nn.Module):
-    def __init__(self, input_dim, pool_ratio):
-        print("   ↳ Inicializando DGPool...")
-        super(DGPool, self).__init__()
-        self.pool_ratio = pool_ratio
-        self.trainable_vector_pooling = nn.Parameter(torch.randn(input_dim,1))
-
-    def forward(self, lw_matrix_hidden_state_last):
-        """
-        Args:
-            lw_matrix_hidden_state_last (torch.Tensor): Matriz de features nodales del último
-                paso temporal del procesamiento GNN-LSTM. Forma: [N, F] donde N es el número 
-                de nodos y F es la dimensión de features (hidden_channels).
-    
-        Returns:
-            tuple: Una tupla de 3 elementos conteniendo:
-                - new_x (torch.Tensor): Features nodales agrupadas de los top-k nodos. Forma: [k, F]
-                - pool_loss (torch.Tensor): Pérdida de regularización que fomenta diversidad de scores. Tensor escalar.
-                - scores (torch.Tensor): Scores sigmoid crudos de todos los nodos antes de la selección.
-                    Forma: [N, 1]. Usado para análisis/visualización.
-
-        """
-
-        x = lw_matrix_hidden_state_last # [N, F]
-        num_nodes = x.size(0)
-        k = max(1, int(num_nodes * self.pool_ratio))
-
-        # Scores por nodo
-        norm2 = torch.norm(self.trainable_vector_pooling)
-        scores = x @ (self.trainable_vector_pooling / (norm2 + 1e-8))  # [N,1]
-
-        # Normalización (opcional depende del paper)
-        scores = (scores - scores.mean()) / (scores.std(unbiased=False) + 1e-8)
-
-        # Sigmoid para suavizar
-        sig_scores = torch.sigmoid(scores)  # [N,1]
-
-        # Escalar features
-        x_scaled = x * sig_scores
-
-        # Tomar top-k
-        _, indices = torch.topk(sig_scores.squeeze(), k=k)
-        new_x = x_scaled[indices]
-
-        # # Crear nuevo grafo completamente conectado (como en el paper)
-        # new_edge_index = self._fully_connect(indices, device=x.device)
-
-
-        # Pooling loss
-        # Ordenar scores descendente
-        sig_scores_sorted, _ = torch.sort(sig_scores.squeeze(), descending=True)
-
-        # Separar top-k y resto
-        topk_scores = sig_scores_sorted[:k]
-        rest_scores = sig_scores_sorted[k:]
-
-        # Evitar log(0)
-        eps = 1e-8
-
-        # Pooling loss según ecuación (20)
-        pool_loss = -(
-            torch.log(topk_scores + eps).sum() +
-            torch.log(1.0 - rest_scores + eps).sum()
-        ) / num_nodes
-
-        return new_x, pool_loss
-    
-
-from torch_geometric.nn import GCNConv
-import torch.nn.functional as F
-
-
-class GNN_LSTM(nn.Module):
-    def __init__(self, num_node_features, hidden_channels = 64, pool_ratio = 0.15):
-        print("   ↳ Inicializando GNN_LSTM...")
-        super().__init__()
-
-        self.pool_ratio = pool_ratio
-        self.hidden_channels = hidden_channels
-        self.node_feat_dim = num_node_features
-
-        #GCNConv para la entrada (G_t)
-        self.input_gnn = GCNConv(num_node_features, hidden_channels)
-        self.forget_gnn = GCNConv(num_node_features, hidden_channels)
-        self.output_gnn = GCNConv(num_node_features, hidden_channels)
-        self.modulation_gnn = GCNConv(num_node_features, hidden_channels)
-
-        # GCN para el hidden state (H_{t-p})
-        self.input_gnn_hidden_state = GCNConv(hidden_channels, hidden_channels)
-        self.forget_gnn_hidden_state = GCNConv(hidden_channels, hidden_channels)
-        self.output_gnn_hidden_state = GCNConv(hidden_channels, hidden_channels)
-        self.modulation_gnn_hidden_state = GCNConv(hidden_channels, hidden_channels)
-
-        ## Añadir capa de normalización para estabilidad
-        self.layer_norm = nn.LayerNorm(hidden_channels * 2)
-
-        # Dynamic Graph Pooling
-        self.dg_pool = DGPool(hidden_channels, pool_ratio)
-
-        #LSTM para procesar datos raw
-        self.lstm_raw_fmri = nn.LSTM(
-            input_size=num_nodes,                   # número de ROIs
-            hidden_size=hidden_channels,      # tamaño del embedding temporal
-            num_layers=1,                     # una sola capa
-            batch_first=False
-        )
-
-        #MLP Clasificacion final
-        self.mlp_layer_1 = nn.Linear(hidden_channels * 2, hidden_channels)
-        self.mlp_layer_2 = nn.Linear(hidden_channels, 1)
-        self.mlp_dropout = nn.Dropout(p = 0.3)
-
-
-        
-
-    def forward(self, lw_matrixes_sequence,edge_index , hidden_state, cell_state, time_series):
-        """
-        Args:
-        lw_matrixes_sequence (list): Lista de tensores representando la secuencia temporal
-            de matrices de conectividad funcional. Cada elemento tiene forma [N, F] donde
-            N = num_nodes y F = num_node_features.
-
-        edge_index (torch.Tensor): Índices de aristas del grafo completamente conectado.
-            Forma: [2, E] donde E es el número de aristas. Se reutiliza para todos los timesteps.
-
-        hidden_state (torch.Tensor): Estado oculto inicial del GNN-LSTM. Forma: [N, hidden_channels].
-            Típicamente inicializado con zeros al inicio de cada sujeto.
-        cell_state (torch.Tensor): Estado de celda inicial del GNN-LSTM. Forma: [N, hidden_channels].
-            Típicamente inicializado con zeros al inicio de cada sujeto.
-        time_series (torch.Tensor): Serie temporal completa de fMRI raw del sujeto.
-            Forma: [T, N] donde T = timepoints (~140-200) y N = num_nodes (200 ROIs).
-
-             
-        Returns:
-            tuple: Una tupla de 3 elementos conteniendo:
-                - pred (torch.Tensor): Logit de predicción binaria (antes de sigmoid). 
-                    
-                - pool_loss (torch.Tensor): Pérdida de regularización del pooling dinámico.
-        """
-        
-
-
-        # Normalización del hidden y cell
-        if torch.isnan(hidden_state).any() or torch.isnan(cell_state).any():
-            print("⚠️ NaN detectado en hidden o cell")
-
-
-        # Por cada matriz lw de la ventana en el tiempo t de un individuo
-        for x in lw_matrixes_sequence:
-            
-
-            # ==== GATES ====
-            input_gate = torch.sigmoid(
-                self.input_gnn(x, edge_index) +
-                self.input_gnn_hidden_state(hidden_state, edge_index)
-            )
-            forget_gate = torch.sigmoid(
-                self.forget_gnn(x, edge_index) +
-                self.forget_gnn_hidden_state(hidden_state, edge_index)
-            )
-            output_gate = torch.sigmoid(
-                self.output_gnn(x, edge_index) +
-                self.output_gnn_hidden_state(hidden_state, edge_index)
-            )
-            modulation = torch.relu(
-                self.modulation_gnn(x, edge_index) +
-                self.modulation_gnn_hidden_state(hidden_state, edge_index)
-            )
-
-            # ==== CELL STATE ====
-            cell_state = torch.tanh(input_gate * modulation + forget_gate * cell_state)
-
-            # ==== NEW HIDDEN STATE ====
-            hidden_state = output_gate * torch.tanh(cell_state)
-
-        # ==== DG-Pooling ====
-        pooled_graph, pool_loss = self.dg_pool(hidden_state)  # [N, hidden_channels] → [k, hidden_channels]
-        high_level_embeddings = torch.mean(pooled_graph, dim=0)  # [k, hidden_channels] → [hidden_channels]
-
-        # ==== LSTM raw fMRI ====
-        low_level_embeddings = self.lstm_raw_time_series(time_series)  # [T, N] → [hidden_channels]
-
-        # ==== Fusión ====
-        fusion = torch.cat([high_level_embeddings, low_level_embeddings], dim=0)  # [hidden_channels] + [hidden_channels] → [hidden_channels * 2]
-        fusion = self.layer_norm(fusion.unsqueeze(0)).squeeze(0)  # [hidden_channels * 2] → [1, hidden_channels * 2] → [hidden_channels * 2]
-
-        # ==== Clasificación ====
-        pred = self.mlp_classiffier(fusion)  # [hidden_channels * 2] → [1]
-
-        return pred, pool_loss
-
-
-    def lstm_raw_time_series(self,time_series_data):
-
-        _, (h_last,_) = self.lstm_raw_fmri(time_series_data)
-        h_last = h_last[-1].squeeze(0)  # [64]
-        return h_last
-
-    def mlp_classiffier(self,concat_embedding):
-
-        concat_embedding = F.relu(self.mlp_layer_1(concat_embedding))
-        concat_embedding = self.mlp_dropout(concat_embedding)
-        concat_embedding = self.mlp_layer_2(concat_embedding)
-        return concat_embedding
-
-    def compute_loss(self, prediction_batch, label_batch, pool_losses_batch, lambda_pool=0.1):
-
-        loss_ce = F.binary_cross_entropy_with_logits(prediction_batch, label_batch)
-        loss_pool = torch.mean(pool_losses_batch)
-        return loss_ce + lambda_pool * loss_pool
-
-torch.set_printoptions(threshold=torch.inf)
-
-
-def get_edge_indexes_fully_connected():
-    idx = torch.arange(num_nodes, device=device, dtype = torch.long)
-    edge_index = torch.cartesian_prod(idx, idx).t()
-    return edge_index[:, edge_index[0] != edge_index[1]]
-
-
-
-print("11. Definiendo función de entrenamiento...")
-from sklearn.model_selection import train_test_split
-from torch.optim.lr_scheduler import StepLR
-import time
-
-###################################################################
+print("11. Definiendo clase EarlyStopping...")
 class EarlyStopping:
     def __init__(self, patience=10, min_delta=0.001):
         self.patience = patience
@@ -544,7 +512,7 @@ class EarlyStopping:
         self.best_loss = float('inf')
         self.counter = 0
         
-    def __call__(self, model, val_loss, checkpoint_path='best_model.pth'):
+    def __call__(self, model, val_loss, checkpoint_path):
         if val_loss < self.best_loss - self.min_delta:
             self.best_loss = val_loss
             self.counter = 0
@@ -559,19 +527,23 @@ class EarlyStopping:
                 print(f"🔙 Restaurando mejor modelo (loss: {self.best_loss:.4f})")
                 return True
         return False
-    
-###################################################################
 
+print("12. Definiendo función de entrenamiento train_model...")
+from sklearn.model_selection import train_test_split
+from torch.optim.lr_scheduler import StepLR
+import time
 
-def train_model(checkpoint_path='checkpoint.pth'):
+def train_model():
+    print("\n" + "="*80)
     print("=== INICIANDO ENTRENAMIENTO CON MONITOREO ===")
+    print("="*80 + "\n")
 
     # 🔥 CREAR MONITOR
     from gpu_memory_monitor import GPUMemoryMonitor, monitor_batch_memory
     monitor = GPUMemoryMonitor()
     monitor.snapshot("INICIO_ENTRENAMIENTO")
 
-    print("12. Preparando datos para entrenamiento...")
+    print("13. Preparando datos para entrenamiento...")
     X = []
     for site in sites:
         for subject_ts in rois_time_series[site]:
@@ -590,274 +562,230 @@ def train_model(checkpoint_path='checkpoint.pth'):
         random_state=42
     )
 
-    print("13. Inicializando modelo y optimizador...")
-    gnn_lstm = GNN_LSTM(num_node_features).to(device).double()
-    optimizer = torch.optim.Adam(gnn_lstm.parameters(), lr=1e-3, weight_decay=0.05)
-    scheduler = StepLR(optimizer, step_size=20, gamma=0.4)
-
-    # 🔥 SNAPSHOT DESPUÉS DE CREAR MODELO
-    # monitor.snapshot("MODELO_CREADO")
-    # monitor.compare_snapshots()
-
     # Preprocesar todo antes del loop
     X_tensors = [torch.tensor(ts, dtype=torch.float64) for ts in X]
     y_tensor = torch.tensor(y, dtype=torch.float64)
 
-    # Estados iniciales en device
-    starting_hidden_state = create_starting_hidden_state_graph(num_nodes, gnn_lstm.hidden_channels).to(device)
-    starting_cell_state = create_starting_cell_state(num_nodes, gnn_lstm.hidden_channels).to(device)
-
     # Edge index para features nodales
     edge_index = get_edge_indexes_fully_connected()
 
-    # 🔥 SNAPSHOT DESPUÉS DE INICIALIZAR ESTADOS
-    # monitor.snapshot("ESTADOS_INICIALES_CREADOS")
-    # monitor.compare_snapshots()
+    print("✅ Datos preprocesados correctamente")
+    print(f"   Total de muestras: {len(X)}")
+    print(f"   Entrenamiento: {len(idx_train)}")
+    print(f"   Prueba: {len(idx_test)}")
 
     n_epochs_baseline = 150
-    
     batch_size = 16
-
-
-    start_epoch = 0
-    last_batch_index = 0
-
     avg_loss = 0
 
+    pool_ratios = [0.15, 0.30, 0.50]
 
-    start_epoch, last_batch_index, _ = load_checkpoint(gnn_lstm, optimizer, scheduler, checkpoint_path)
+    print("\n" + "="*80)
+    print(f"🔬 GRID SEARCH: {len(pool_ratios)} configuraciones de pool_ratio")
+    print("="*80 + "\n")
 
-    # Early Stopping
-    early_stopping = EarlyStopping()
-
-    print("14. Iniciando ciclo de entrenamiento...")
-
-    # Entrenamiento
-    for epoch in range(start_epoch, n_epochs_baseline):
-        print(f"\n🎯 INICIANDO ÉPOCA {epoch + 1}/{n_epochs_baseline}")
-
-        # # 🔥 SNAPSHOT AL INICIO DE ÉPOCA
-        # monitor.snapshot(f"EPOCH_{epoch}_START")
-        # Variables de tiempo por época (se reinician cada época)
-        tiempo_total_epoch = 0
-        tiempo_inicio_epoch = time.time()
-
-        gnn_lstm.train()
-        total_loss = 0
-        batch_count = last_batch_index
-
-        idxs_for_epoch = np.random.choice(idx_train, size=len(idx_train), replace=False)
-
-
-         # # 🔥 SNAPSHOT PRE-BATCH
-        #monitor_batch_memory(monitor, batch_count, epoch, "PRE_BATCH")
+    for pool_idx in range(len(pool_ratios)):
+        # ✅ Early stopping independiente para cada pool_ratio
+        early_stopping = EarlyStopping(patience=10, min_delta=0.001)
         
-        for i in range(last_batch_index * batch_size, len(idxs_for_epoch), batch_size):
-            current_batch_index = i // batch_size
-            print(f"Iniciando procesamiento de batch {current_batch_index + 1} en Epoca: {epoch + 1} ")
-            
-            
-            inicio_batch = time.time()
-
-           
-
-
-            idxs_for_batch = idxs_for_epoch[i:i+batch_size]
-            time_series_batch = [
-                X_tensors[idx].detach().clone().to(device)
-                for idx in idxs_for_batch
-            ]
-
-            lw_matrixes_sequence_batch = [X_lw_matrixes[idx] for idx in idxs_for_batch]
-
-            labels_batch = y_tensor[idxs_for_batch]
-
-            # # 🔥 SNAPSHOT DESPUÉS DE CARGAR DATOS
-            
-
-            # Mover device
-            time_series_batch = [ts.to(device) for ts in time_series_batch]
-            lw_matrixes_sequence_batch = [[m.to(device) for m in subject_lw_matrixes] for subject_lw_matrixes in lw_matrixes_sequence_batch]
-            labels_batch = labels_batch.to(device)
-
-            # # 🔥 SNAPSHOT DESPUÉS DE MOVER A GPU
-            #monitor_batch_memory(monitor, batch_count, epoch, "DATOS_EN_GPU")
-
-            preds_batch = []
-            pool_losses_batch = []
-
-            for j, (time_series, lw_matrixes_sequence, _) in enumerate(zip(time_series_batch, lw_matrixes_sequence_batch, labels_batch)):
-                h = starting_hidden_state.detach().clone()
-                c = starting_cell_state.detach().clone()
-
-                # Forward pass
-                pred, pool_loss = gnn_lstm(
-                    lw_matrixes_sequence = lw_matrixes_sequence,
-                    edge_index = edge_index,
-                    hidden_state=h,
-                    cell_state=c,
-                    time_series=time_series
-                )
-
-                pred = pred.view(-1)
-                if pred.dim() == 0:
-                    pred = pred.unsqueeze(0)
-
-                del h, c, time_series
-
-                preds_batch.append(pred)
-                pool_losses_batch.append(pool_loss)
-
-            # # 🔥 SNAPSHOT DESPUÉS DE FORWARD
-            # monitor.snapshot(f"E{epoch}_B{batch_count}_FORWARD_DONE")
-
-            # Apilar batch y mover a device
-            prediction_batch = torch.stack(preds_batch).view(-1).to(device)
-            pool_losses_batch_stacked  = torch.stack(pool_losses_batch).view(-1).to(device)
-
-            # Calcular pérdida y backward
-            loss = gnn_lstm.compute_loss(prediction_batch, labels_batch, pool_losses_batch_stacked )
-
-            optimizer.zero_grad()
-            loss.backward()
-
-            # # 🔥 SNAPSHOT DESPUÉS DE BACKWARD
-            # monitor.snapshot(f"E{epoch}_B{batch_count}_BACKWARD_DONE")
-
-            torch.nn.utils.clip_grad_norm_(gnn_lstm.parameters(), max_norm=1.0)
-            optimizer.step()
-
-            # # 🔥 SNAPSHOT DESPUÉS DE OPTIMIZER STEP
-            # monitor.snapshot(f"E{epoch}_B{batch_count}_OPTIMIZER_DONE")
-
-            total_loss += loss.item()
-            batch_count += 1
-
-
-
-            if batch_count % 10 == 0:
-                save_checkpoint(gnn_lstm, optimizer, scheduler, epoch, current_batch_index, loss.item(), checkpoint_path)
-
-
-
-            # # 🔥 SNAPSHOT POST-BATCH (ANTES DE LIMPIEZA)
-            # monitor_batch_memory(monitor, batch_count-1, epoch, "POST_BATCH_ANTES_DE_LIMPIEZA")
-
-            # # 🔥 COMPARAR PRE vs POST
-            # print("\n" + "="*80)
-            # print(f"📊 COMPARACIÓN BATCH {batch_count-1}")
-            # print("="*80)
-            # # Comparar PRE_BATCH con POST_BATCH
-            # monitor.compare_snapshots(-8, -1)  # PRE vs POST_PRE_CLEANUP
-
-
-
-            # Limpieza
-            # ─────────────────────────────────────────────────────────────
-            # ✅ AHORA SÍ: Limpieza DESPUÉS de backward
-            # ─────────────────────────────────────────────────────────────
-            cleanup_batch_simple(
-                time_series_batch=time_series_batch,
-                lw_matrixes_sequence_batch=lw_matrixes_sequence_batch,
-                preds_batch=preds_batch,
-                pool_losses_batch=pool_losses_batch,
-                labels_batch=labels_batch,
-                model=gnn_lstm,
-                optimizer=optimizer,
-                extra_vars={
-                    'pred': pred,
-                    'pool_loss': pool_loss,
-                    'prediction_batch': prediction_batch,
-                    'loss': loss,
-                    'pool_losses_batch_stacked': pool_losses_batch_stacked
-                }
-            )
-
-            # # 🔥 SNAPSHOT POST-LIMPIEZA
-            #monitor_batch_memory(monitor, batch_count-1, epoch, "POST_LIMPIEZA")
-
-            # # 🔥 COMPARAR POST_PRE_CLEANUP vs POST_CLEANUP
-            # print(f"\n🧹 EFECTIVIDAD DE LIMPIEZA:")
-            # monitor.compare_snapshots(-2, -1)
-
-
-             # Calcular tiempo del batch actual
-            fin_batch = time.time()
-            tiempo_batch = fin_batch - inicio_batch
-            tiempo_total_epoch += tiempo_batch
-
-            # Calcular tiempo promedio por batch en esta época
-            batches_en_epoch = batch_count - last_batch_index
-            tiempo_promedio_batch = tiempo_total_epoch / max(1, batches_en_epoch)
-
-            new_loss = total_loss / max(1, batch_count)
-
-            # Reporte de loss y tiempo cada x batches
-            if batches_en_epoch % 10 == 0:
-                print("\n" + "🔥"*40)
-                print(f"Loss= {new_loss:.4f}. ΔLoss = {(new_loss - avg_loss):.4f}")
-               
-                print("🔥"*40 + "\n")
-
-
-            avg_loss = new_loss
-            print(f"   ✅ Batch {batch_count } completado - Tiempo: {tiempo_batch:.2f}s | Promedio por batch en la epoca: {tiempo_promedio_batch:.2f}s")
-
-
-        scheduler.step()
-
-        # Calcular tiempo total de la época
-        tiempo_fin_epoch = time.time()
-        tiempo_total_epoch = tiempo_fin_epoch - tiempo_inicio_epoch
-
-        # Calcular estadísticas finales de la época
-        batches_completados_epoch = batch_count - last_batch_index
-        if batches_completados_epoch > 0:
-            tiempo_promedio_epoch = tiempo_total_epoch / batches_completados_epoch
-        else:
-            tiempo_promedio_epoch = 0
-
-        print(f"\n📊 Epoch {epoch}/{n_epochs_baseline}")
-        print(f"   Loss: {avg_loss:.4f}")
-        print(f"   Tiempo total: {tiempo_total_epoch:.2f}s")
-        print(f"   Tiempo promedio por batch: {tiempo_promedio_epoch:.2f}s")
-        print(f"   Batches procesados: {batches_completados_epoch}")
-
-        # Evaluación y Early Stopping
+        print("\n" + "🔹"*80)
+        print(f"🔬 CONFIGURACIÓN {pool_idx+1}/{len(pool_ratios)}: pool_ratio = {pool_ratios[pool_idx]}")
+        print("🔹"*80 + "\n")
         
-    
-        if early_stopping(gnn_lstm, avg_loss, 'best_model.pth'):
-            print(f"🛑 Early stopping en época {epoch}")
-            break
+        print(f"14. Inicializando modelo con pool_ratio = {pool_ratios[pool_idx]}...")
+        
+        gnn_lstm = GNN_LSTM(num_node_features, pool_ratio=pool_ratios[pool_idx]).to(device).double()
+        optimizer = torch.optim.Adam(gnn_lstm.parameters(), lr=1e-3, weight_decay=0.05)
+        scheduler = StepLR(optimizer, step_size=20, gamma=0.4)
 
-        # 🔥 REPORTE AL FINAL DE ÉPOCA
-        print("\n" + "="*80)
-        print(f"📊 REPORTE FIN DE ÉPOCA {epoch}")
-        print("="*80)
-        monitor.print_detailed_report()
-        monitor.snapshot(f"EPOCH_{epoch + 1}_END")
+        checkpoint_path = f'checkpoint_pool_{pool_ratios[pool_idx]}.pth'
+        best_model_path = f'best_model_pool_{pool_ratios[pool_idx]}.pth'
 
-        # Comparar inicio vs fin de época
-        epoch_start_idx = None
-        for idx, snap in enumerate(monitor.snapshots):
-            if snap['label'] == f"EPOCH_{epoch + 1}_START":
-                epoch_start_idx = idx
-                break
+        print(f"   📁 Checkpoint: {checkpoint_path}")
+        print(f"   📁 Best model: {best_model_path}")
 
-        if epoch_start_idx is not None:
-            print(f"\n🔍 COMPARACIÓN ÉPOCA {epoch + 1}: INICIO vs FIN")
-            monitor.compare_snapshots(epoch_start_idx, -1)
+        # Estados iniciales en device
+        starting_hidden_state = create_starting_hidden_state_graph(num_nodes, gnn_lstm.hidden_channels).to(device)
+        starting_cell_state = create_starting_cell_state(num_nodes, gnn_lstm.hidden_channels).to(device)
 
-        # Reiniciar last_batch_index para la próxima época
+        # ✅ Inicialización por defecto
+        start_epoch = 0
         last_batch_index = 0
 
-    print("17. Guardando modelo final...")
-    torch.save(gnn_lstm.state_dict(), 'modelo_final.pth')
-    print("✅ Modelo final guardado como 'modelo_final.pth'")
+        # Intentar cargar checkpoint
+        loaded_epoch, loaded_batch, loaded_loss = load_checkpoint(gnn_lstm, optimizer, scheduler, checkpoint_path)
+        if loaded_epoch > 0:
+            start_epoch = loaded_epoch
+            last_batch_index = loaded_batch
+            print(f"✅ Checkpoint cargado: época {start_epoch}, batch {last_batch_index}")
+        else:
+            print(f"🆕 Iniciando desde cero para pool_ratio={pool_ratios[pool_idx]}")
 
-        
+        print(f"\n15. Iniciando ciclo de entrenamiento (épocas {start_epoch} a {n_epochs_baseline})...")
+
+        # Entrenamiento
+        for epoch in range(start_epoch, n_epochs_baseline):
+            print(f"\n{'─'*80}")
+            print(f"🎯 ÉPOCA {epoch + 1}/{n_epochs_baseline} | Pool Ratio: {pool_ratios[pool_idx]}")
+            print(f"{'─'*80}")
+
+            # Variables de tiempo por época (se reinician cada época)
+            tiempo_total_epoch = 0
+            tiempo_inicio_epoch = time.time()
+
+            gnn_lstm.train()
+            total_loss = 0
+            batch_count = last_batch_index
+
+            idxs_for_epoch = np.random.choice(idx_train, size=len(idx_train), replace=False)
+            
+            for i in range(last_batch_index * batch_size, len(idxs_for_epoch), batch_size):
+                current_batch_index = i // batch_size
+                print(f"   📦 Batch {current_batch_index + 1} | Época: {epoch + 1} ")
+                
+                inicio_batch = time.time()
+
+                idxs_for_batch = idxs_for_epoch[i:i+batch_size]
+                time_series_batch = [
+                    X_tensors[idx].detach().clone().to(device)
+                    for idx in idxs_for_batch
+                ]
+
+                lw_matrixes_sequence_batch = [X_lw_matrixes[idx] for idx in idxs_for_batch]
+                labels_batch = y_tensor[idxs_for_batch]
+
+                # Mover device
+                time_series_batch = [ts.to(device) for ts in time_series_batch]
+                lw_matrixes_sequence_batch = [[m.to(device) for m in subject_lw_matrixes] for subject_lw_matrixes in lw_matrixes_sequence_batch]
+                labels_batch = labels_batch.to(device)
+
+                preds_batch = []
+                pool_losses_batch = []
+
+                for k, (time_series, lw_matrixes_sequence, _) in enumerate(zip(time_series_batch, lw_matrixes_sequence_batch, labels_batch)):
+                    h = starting_hidden_state.detach().clone()
+                    c = starting_cell_state.detach().clone()
+
+                    # Forward pass
+                    pred, pool_loss = gnn_lstm(
+                        lw_matrixes_sequence = lw_matrixes_sequence,
+                        edge_index = edge_index,
+                        hidden_state=h,
+                        cell_state=c,
+                        time_series=time_series
+                    )
+
+                    pred = pred.view(-1)
+                    if pred.dim() == 0:
+                        pred = pred.unsqueeze(0)
+
+                    del h, c, time_series
+
+                    preds_batch.append(pred)
+                    pool_losses_batch.append(pool_loss)
+
+                # Apilar batch y mover a device
+                prediction_batch = torch.stack(preds_batch).view(-1).to(device)
+                pool_losses_batch_stacked  = torch.stack(pool_losses_batch).view(-1).to(device)
+
+                # Calcular pérdida y backward
+                loss = gnn_lstm.compute_loss(prediction_batch, labels_batch, pool_losses_batch_stacked)
+
+                optimizer.zero_grad()
+                loss.backward()
+
+                torch.nn.utils.clip_grad_norm_(gnn_lstm.parameters(), max_norm=1.0)
+                optimizer.step()
+
+                total_loss += loss.item()
+                batch_count += 1
+
+                if batch_count % 10 == 0:
+                    save_checkpoint(gnn_lstm, optimizer, scheduler, epoch, current_batch_index, loss.item(), checkpoint_path)
+
+
+                
+
+                # Limpieza DESPUÉS de backward
+                cleanup_batch_simple(
+                    time_series_batch=time_series_batch,
+                    lw_matrixes_sequence_batch=lw_matrixes_sequence_batch,
+                    preds_batch=preds_batch,
+                    pool_losses_batch=pool_losses_batch,
+                    labels_batch=labels_batch,
+                    model=gnn_lstm,
+                    optimizer=optimizer,
+                    extra_vars={
+                        'pred': pred,
+                        'pool_loss': pool_loss,
+                        'prediction_batch': prediction_batch,
+                        'loss': loss,
+                        'pool_losses_batch_stacked': pool_losses_batch_stacked
+                    }
+                )
+
+                # Calcular tiempo del batch actual
+                fin_batch = time.time()
+                tiempo_batch = fin_batch - inicio_batch
+                tiempo_total_epoch += tiempo_batch
+
+                # Calcular tiempo promedio por batch en esta época
+                batches_en_epoch = batch_count - last_batch_index
+                tiempo_promedio_batch = tiempo_total_epoch / max(1, batches_en_epoch)
+
+                new_loss = total_loss / max(1, batch_count)
+
+                # Reporte de loss y tiempo cada 10 batches
+                if batches_en_epoch % 10 == 0:
+                    print("\n" + "🔥"*40)
+                    print(f"      Loss= {new_loss:.4f} | ΔLoss = {(new_loss - avg_loss):.4f}")
+                    print("🔥"*40 + "\n")
+
+                avg_loss = new_loss
+                print(f"      ✅ Batch {batch_count} completado - Tiempo: {tiempo_batch:.2f}s | Promedio: {tiempo_promedio_batch:.2f}s")
+
+            scheduler.step()
+
+            # Calcular tiempo total de la época
+            tiempo_fin_epoch = time.time()
+            tiempo_total_epoch = tiempo_fin_epoch - tiempo_inicio_epoch
+
+            # Calcular estadísticas finales de la época
+            batches_completados_epoch = batch_count - last_batch_index
+            if batches_completados_epoch > 0:
+                tiempo_promedio_epoch = tiempo_total_epoch / batches_completados_epoch
+            else:
+                tiempo_promedio_epoch = 0
+
+            print(f"\n{'─'*80}")
+            print(f"📊 RESUMEN ÉPOCA {epoch + 1}/{n_epochs_baseline}")
+            print(f"{'─'*80}")
+            print(f"   📉 Loss: {avg_loss:.4f}")
+            print(f"   ⏱️  Tiempo total: {tiempo_total_epoch:.2f}s")
+            print(f"   ⏱️  Tiempo promedio por batch: {tiempo_promedio_epoch:.2f}s")
+            print(f"   📦 Batches procesados: {batches_completados_epoch}")
+            print(f"{'─'*80}")
+
+            # Evaluación y Early Stopping
+            if early_stopping(gnn_lstm, avg_loss, best_model_path):
+                print(f"\n🛑 Early stopping activado en época {epoch + 1}")
+                print(f"   Mejor loss alcanzado: {early_stopping.best_loss:.4f}")
+                break
+
+            # Reiniciar last_batch_index para la próxima época
+            last_batch_index = 0
+
+        print("\n" + "✅"*40)
+        print(f"✅ CONFIGURACIÓN {pool_idx+1}/{len(pool_ratios)} COMPLETADA")
+        print(f"   Pool ratio: {pool_ratios[pool_idx]}")
+        print(f"   Best model guardado: {best_model_path}")
+        print("✅"*40 + "\n")
+
+
 print("16. Iniciando entrenamiento...")
-train_model('checkpoint.pth')
+train_model()
 
+print("\n" + "="*80)
 print("=== ENTRENAMIENTO COMPLETADO ===")
-print("=== PROGRAMA FINALIZADO ===")
+print("="*80)
+print("=== PROGRAMA FINALIZADO ===\n")
