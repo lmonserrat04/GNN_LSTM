@@ -391,7 +391,7 @@ class GNN_LSTM(nn.Module):
         self.hidden_channels = hidden_channels
         self.node_feat_dim = num_node_features
 
-        #GraphConv para la entrada (G_t)
+        #GCNConv para la entrada (G_t)
         self.input_gnn = GCNConv(num_node_features, hidden_channels)
         self.forget_gnn = GCNConv(num_node_features, hidden_channels)
         self.output_gnn = GCNConv(num_node_features, hidden_channels)
@@ -538,7 +538,7 @@ import time
 
 ###################################################################
 class EarlyStopping:
-    def __init__(self, patience=20, min_delta=0.001):
+    def __init__(self, patience=10, min_delta=0.001):
         self.patience = patience
         self.min_delta = min_delta
         self.best_loss = float('inf')
@@ -628,7 +628,7 @@ def train_model(checkpoint_path='checkpoint.pth'):
     start_epoch, last_batch_index, _ = load_checkpoint(gnn_lstm, optimizer, scheduler, checkpoint_path)
 
     # Early Stopping
-    early_stopping = EarlyStopping(patience=20)
+    early_stopping = EarlyStopping()
 
     print("14. Iniciando ciclo de entrenamiento...")
 
