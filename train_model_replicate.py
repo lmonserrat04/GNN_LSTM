@@ -515,7 +515,7 @@ class GNN_LSTM(nn.Module):
         concat_embedding = self.mlp_layer_2(concat_embedding)
         return concat_embedding
 
-    def compute_loss(self, prediction_batch, label_batch, pool_losses_batch, lambda_pool=0.5):
+    def compute_loss(self, prediction_batch, label_batch, pool_losses_batch, lambda_pool=0.1):
 
         loss_ce = F.binary_cross_entropy_with_logits(prediction_batch, label_batch)
         loss_pool = torch.mean(pool_losses_batch)
@@ -801,7 +801,7 @@ def train_model(checkpoint_path='checkpoint.pth'):
 
 
             avg_loss = new_loss
-            print(f"   ✅ Batch {batch_count + 1} completado - Tiempo: {tiempo_batch:.2f}s | Promedio por batch en la epoca: {tiempo_promedio_batch:.2f}s")
+            print(f"   ✅ Batch {batch_count } completado - Tiempo: {tiempo_batch:.2f}s | Promedio por batch en la epoca: {tiempo_promedio_batch:.2f}s")
 
 
         scheduler.step()
