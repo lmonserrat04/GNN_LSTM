@@ -56,6 +56,8 @@ test_site = 'YALE'
 num_nodes = 200
 num_node_features = 200
 
+batch_size = 16
+
 print("4. Definiendo función load_rois_data...")
 def load_rois_data(sites):
     """
@@ -576,7 +578,7 @@ def train_model():
     print(f"   Prueba: {len(idx_test)}")
 
     n_epochs_baseline = 150
-    batch_size = 16
+    
     avg_loss = 0
 
     pool_ratios = [0.15, 0.30, 0.50]
@@ -731,8 +733,7 @@ def train_model():
                 )
 
                 
-                print("\n🔍 ANÁLISIS DE MEMORIA AL FINAL DE BATCH:")
-                monitor.print_detailed_report()
+                
 
                 # Calcular tiempo del batch actual
                 fin_batch = time.time()
@@ -745,10 +746,13 @@ def train_model():
 
                 new_loss = total_loss / max(1, batch_count)
 
-                # Reporte de loss y tiempo cada 10 batches
+                # Reporte de loss memoria cada 10 batches
                 if batches_en_epoch % 10 == 0:
                     print("\n" + "🔥"*40)
+                    print("\n🔍 ANÁLISIS DE MEMORIA CADA 10 BATCHS:")
+                    monitor.print_detailed_report()
                     print(f"      Loss en entrenamiento = {new_loss:.4f} | ΔLoss = {(new_loss - avg_loss):.4f}")
+                    
                     print("🔥"*40 + "\n")
 
                 avg_loss = new_loss
