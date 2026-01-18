@@ -27,7 +27,9 @@ def cleanup_batch_simple(time_series_batch, lw_matrixes_sequence_batch,
     del labels_batch
     
     # Limpiar gradientes
-    optimizer.zero_grad(set_to_none=True)
+    if optimizer is not None:
+
+        optimizer.zero_grad(set_to_none=True)
     for param in model.parameters():
         param.grad = None
     

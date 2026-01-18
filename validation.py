@@ -9,7 +9,7 @@ def validate(model,idx_test,batch_size,epoch,X_tensors,y_tensor, X_lw_matrixes,e
     
     print(f"Validando para epoca: {epoch+1} ")
 
-    test_y_true, test_y_pred, test_y_pred_prob = [], [], []
+    
     batch_count = 0
 
     n_samples = 0
@@ -52,9 +52,7 @@ def validate(model,idx_test,batch_size,epoch,X_tensors,y_tensor, X_lw_matrixes,e
                 pred_prob = torch.sigmoid(pred)
                 y_pred = 1 if pred_prob >= threshold else 0
 
-                test_y_true.append(y_tensor[idx].item())
-                test_y_pred.append(y_pred)
-                test_y_pred_prob.append(pred_prob.cpu().item())
+                
 
                 preds_batch.append(pred)
                 pool_losses_batch.append(pool_loss)
