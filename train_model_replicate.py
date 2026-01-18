@@ -661,6 +661,8 @@ def train_model():
             batch_count = last_batch_index
 
             idxs_for_epoch = np.random.choice(idx_train, size=len(idx_train), replace=False)
+
+            current_batch_index = 0
         
             
             for i in range(last_batch_index * batch_size, len(idxs_for_epoch), batch_size):
