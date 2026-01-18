@@ -56,7 +56,7 @@ test_site = 'YALE'
 num_nodes = 200
 num_node_features = 200
 
-batch_size = 8
+batch_size = 16
 
 print("4. Definiendo función load_rois_data...")
 def load_rois_data(sites):
@@ -350,7 +350,7 @@ torch.set_printoptions(threshold=torch.inf)
 
 print("10. Definiendo funciones de checkpoint...")
 
-def save_checkpoint(model, optimizer, scheduler, epoch, current_batch_index, loss, path='checkpoint.pth'):
+def save_checkpoint(model, optimizer, scheduler, epoch, current_batch_index, training_loss,val_loss,patience_counter, path):
     """Guarda el estado completo del entrenamiento de forma atómica"""
     print(f"   💾 Guardando checkpoint para época {epoch}...")
 
@@ -361,7 +361,9 @@ def save_checkpoint(model, optimizer, scheduler, epoch, current_batch_index, los
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'scheduler_state_dict': scheduler.state_dict(),
-            'loss': loss,
+            'training_loss': training_loss,
+            'val_loss':val_loss,
+            'current_es_patience':patience_counter,
             'batch_idx': current_batch_index,
         }
 
@@ -379,7 +381,7 @@ def save_checkpoint(model, optimizer, scheduler, epoch, current_batch_index, los
 
             # Verificar que todas las claves necesarias están presentes
             required_keys = ['epoch', 'model_state_dict', 'optimizer_state_dict',
-                           'scheduler_state_dict', 'loss', 'batch_idx']
+                           'scheduler_state_dict', 'training_loss','val_loss','current_es_patience', 'batch_idx']
             for key in required_keys:
                 if key not in test_checkpoint:
                     raise ValueError(f"Clave faltante en checkpoint: {key}")
@@ -425,7 +427,7 @@ def save_checkpoint(model, optimizer, scheduler, epoch, current_batch_index, los
                 pass
 
 
-def load_checkpoint(model, optimizer, scheduler, path):
+def load_checkpoint(model, optimizer, scheduler,early_stop, path):
     """Carga el estado completo del entrenamiento con recuperación ante fallos"""
     print(f"   📥 Intentando cargar checkpoint desde {path}...")
 
@@ -457,7 +459,7 @@ def load_checkpoint(model, optimizer, scheduler, path):
                     continue
 
                 required_keys = ['epoch', 'model_state_dict', 'optimizer_state_dict',
-                               'scheduler_state_dict', 'loss', 'batch_idx']
+                               'scheduler_state_dict', 'training_loss','val_loss', 'batch_idx']
                 missing_keys = [k for k in required_keys if k not in checkpoint]
 
                 if missing_keys:
@@ -468,14 +470,20 @@ def load_checkpoint(model, optimizer, scheduler, path):
                 model.load_state_dict(checkpoint['model_state_dict'])
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
                 scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                
 
                 start_epoch = checkpoint['epoch']
                 current_batch_index = checkpoint['batch_idx']
-                loss = checkpoint['loss']
+                training_loss = checkpoint['training_loss']
+                val_loss = checkpoint['val_loss']
+                patience_counter = checkpoint['current_es_patience']
+                early_stop.counter = patience_counter
 
                 print(f"   ✅ Checkpoint cargado desde {checkpoint_path}")
                 print(f"   📊 Continuando desde época {start_epoch}, batch: {current_batch_index}")
-                print(f"   📉 Pérdida anterior: {loss:.6f}")
+                print(f"   📉 Pérdida en entrenamiento anterior: {training_loss:.6f}")
+                print(f"   📉 Pérdida en validacion anterior: {val_loss:.6f}")
+                print(f"   📉 Contador de paciencia actual del early stopping: {patience_counter}")
 
                 # Si cargamos desde backup, restaurar como checkpoint principal
                 if checkpoint_path == backup_path and os.path.exists(backup_path):
@@ -485,7 +493,7 @@ def load_checkpoint(model, optimizer, scheduler, path):
                     except:
                         pass
 
-                return start_epoch, current_batch_index, loss
+                return start_epoch, current_batch_index, training_loss, val_loss
 
             except Exception as e:
                 print(f"   ❌ Error al cargar {checkpoint_path}: {e}")
@@ -505,7 +513,7 @@ def load_checkpoint(model, optimizer, scheduler, path):
             except:
                 pass
 
-    return 0, 0, float('inf')
+    return 0, 0, float('inf'),float('inf')
 
 print("11. Definiendo clase EarlyStopping...")
 class EarlyStopping:
@@ -614,13 +622,17 @@ def train_model():
         # ✅ Inicialización por defecto
         start_epoch = 0
         last_batch_index = 0
+        avg_loss = 0
+        val_loss = 0
 
         # Intentar cargar checkpoint
-        loaded_epoch, loaded_batch, loaded_loss = load_checkpoint(gnn_lstm, optimizer, scheduler, checkpoint_path)
-        if loaded_loss == float('-inf'):
+        loaded_epoch, loaded_batch, loaded_training_loss, loaded_val_loss = load_checkpoint(gnn_lstm, optimizer, scheduler,early_stopping, checkpoint_path)
+        if loaded_training_loss == float('inf'):
             avg_loss = 0
         else:
-            avg_loss = loaded_loss
+            avg_loss = loaded_training_loss
+
+        val_loss = 0 if loaded_val_loss == float('inf') else loaded_val_loss
 
         if loaded_epoch > 0:
             start_epoch = loaded_epoch
@@ -649,8 +661,7 @@ def train_model():
             batch_count = last_batch_index
 
             idxs_for_epoch = np.random.choice(idx_train, size=len(idx_train), replace=False)
-            
-            
+        
             
             for i in range(last_batch_index * batch_size, len(idxs_for_epoch), batch_size):
                 current_batch_index = i // batch_size
@@ -702,19 +713,19 @@ def train_model():
                 pool_losses_batch_stacked  = torch.stack(pool_losses_batch).view(-1).to(device)
 
                 # Calcular pérdida y backward
-                loss = gnn_lstm.compute_loss(prediction_batch, labels_batch, pool_losses_batch_stacked)
+                training_loss = gnn_lstm.compute_loss(prediction_batch, labels_batch, pool_losses_batch_stacked)
 
                 optimizer.zero_grad()
-                loss.backward()
+                training_loss.backward()
 
                 torch.nn.utils.clip_grad_norm_(gnn_lstm.parameters(), max_norm=1.0)
                 optimizer.step()
 
-                total_loss += loss.item()
+                total_loss += training_loss.item()
                 batch_count += 1
 
                 if batch_count % 10 == 0:
-                    save_checkpoint(gnn_lstm, optimizer, scheduler, epoch, current_batch_index, loss.item(), checkpoint_path)
+                    save_checkpoint(gnn_lstm, optimizer, scheduler, epoch, current_batch_index, training_loss.item(),val_loss,early_stopping.counter, checkpoint_path)
 
 
                 
@@ -732,7 +743,7 @@ def train_model():
                         'pred': pred,
                         'pool_loss': pool_loss,
                         'prediction_batch': prediction_batch,
-                        'loss': loss,
+                        'training_loss': training_loss,
                         'pool_losses_batch_stacked': pool_losses_batch_stacked
                     }
                 )
@@ -767,9 +778,12 @@ def train_model():
 
             
             gnn_lstm.eval()
+
             #Validacion
             val_loss = validation.validate(gnn_lstm, idx_test,batch_size,epoch,X_tensors, y_tensor,X_lw_matrixes, edge_index, starting_hidden_state,starting_cell_state,device, threshold = 0.5)
 
+            #Checkpoint al final de epoca
+            save_checkpoint(gnn_lstm, optimizer, scheduler, epoch, current_batch_index, avg_loss,val_loss,early_stopping.counter, checkpoint_path)
 
 
 
