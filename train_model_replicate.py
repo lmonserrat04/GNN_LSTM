@@ -617,6 +617,11 @@ def train_model():
 
         # Intentar cargar checkpoint
         loaded_epoch, loaded_batch, loaded_loss = load_checkpoint(gnn_lstm, optimizer, scheduler, checkpoint_path)
+        if loaded_loss == float('-inf'):
+            avg_loss = 0
+        else:
+            avg_loss = loaded_loss
+
         if loaded_epoch > 0:
             start_epoch = loaded_epoch
             last_batch_index = loaded_batch
