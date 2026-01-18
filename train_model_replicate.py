@@ -56,7 +56,7 @@ test_site = 'YALE'
 num_nodes = 200
 num_node_features = 200
 
-batch_size = 16
+batch_size = 8
 
 print("4. Definiendo función load_rois_data...")
 def load_rois_data(sites):
@@ -589,7 +589,7 @@ def train_model():
 
     for pool_idx in range(len(pool_ratios)):
         # ✅ Early stopping independiente para cada pool_ratio
-        early_stopping = EarlyStopping(patience=10, min_delta=0.001)
+        early_stopping = EarlyStopping(patience=30, min_delta=1e-3)
         
         print("\n" + "🔹"*80)
         print(f"🔬 CONFIGURACIÓN {pool_idx+1}/{len(pool_ratios)}: pool_ratio = {pool_ratios[pool_idx]}")
