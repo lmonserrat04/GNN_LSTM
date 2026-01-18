@@ -576,7 +576,7 @@ def train_model():
     print(f"   Prueba: {len(idx_test)}")
 
     n_epochs_baseline = 150
-    batch_size = 8
+    batch_size = 16
     avg_loss = 0
 
     pool_ratios = [0.15, 0.30, 0.50]
