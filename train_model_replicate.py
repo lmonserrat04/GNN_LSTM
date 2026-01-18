@@ -6,6 +6,7 @@ import torch.nn as nn
 import os
 import tempfile
 import shutil
+import validation
 
 
 from memory_cleanup import cleanup_batch_simple
@@ -539,7 +540,7 @@ def train_model():
     print("="*80 + "\n")
 
     # 🔥 CREAR MONITOR
-    from gpu_memory_monitor import GPUMemoryMonitor, monitor_batch_memory
+    from gpu_memory_monitor import GPUMemoryMonitor
     monitor = GPUMemoryMonitor()
     monitor.snapshot("INICIO_ENTRENAMIENTO")
 
@@ -575,7 +576,7 @@ def train_model():
     print(f"   Prueba: {len(idx_test)}")
 
     n_epochs_baseline = 150
-    batch_size = 16
+    batch_size = 8
     avg_loss = 0
 
     pool_ratios = [0.15, 0.30, 0.50]
@@ -621,7 +622,10 @@ def train_model():
         else:
             print(f"🆕 Iniciando desde cero para pool_ratio={pool_ratios[pool_idx]}")
 
-        print(f"\n15. Iniciando ciclo de entrenamiento (épocas {start_epoch} a {n_epochs_baseline})...")
+        print(f"\n15. Iniciando ciclo de entrenamiento (épocas {start_epoch+1} a {n_epochs_baseline})...")
+
+
+
 
         # Entrenamiento
         for epoch in range(start_epoch, n_epochs_baseline):
@@ -638,6 +642,8 @@ def train_model():
             batch_count = last_batch_index
 
             idxs_for_epoch = np.random.choice(idx_train, size=len(idx_train), replace=False)
+            
+            
             
             for i in range(last_batch_index * batch_size, len(idxs_for_epoch), batch_size):
                 current_batch_index = i // batch_size
@@ -724,6 +730,10 @@ def train_model():
                     }
                 )
 
+                
+                print("\n🔍 ANÁLISIS DE MEMORIA AL FINAL DE BATCH:")
+                monitor.print_detailed_report()
+
                 # Calcular tiempo del batch actual
                 fin_batch = time.time()
                 tiempo_batch = fin_batch - inicio_batch
@@ -738,13 +748,21 @@ def train_model():
                 # Reporte de loss y tiempo cada 10 batches
                 if batches_en_epoch % 10 == 0:
                     print("\n" + "🔥"*40)
-                    print(f"      Loss= {new_loss:.4f} | ΔLoss = {(new_loss - avg_loss):.4f}")
+                    print(f"      Loss en entrenamiento = {new_loss:.4f} | ΔLoss = {(new_loss - avg_loss):.4f}")
                     print("🔥"*40 + "\n")
 
                 avg_loss = new_loss
                 print(f"      ✅ Batch {batch_count} completado - Tiempo: {tiempo_batch:.2f}s | Promedio: {tiempo_promedio_batch:.2f}s")
 
             scheduler.step()
+
+            
+            gnn_lstm.eval()
+            #Validacion
+            val_loss = validation.validate(gnn_lstm, idx_test,batch_size,epoch,X_tensors, y_tensor,X_lw_matrixes, edge_index, starting_hidden_state,starting_cell_state,device, threshold = 0.5)
+
+
+
 
             # Calcular tiempo total de la época
             tiempo_fin_epoch = time.time()
@@ -760,14 +778,19 @@ def train_model():
             print(f"\n{'─'*80}")
             print(f"📊 RESUMEN ÉPOCA {epoch + 1}/{n_epochs_baseline}")
             print(f"{'─'*80}")
-            print(f"   📉 Loss: {avg_loss:.4f}")
+            print(f"   📉 Loss: {val_loss:.4f}")
             print(f"   ⏱️  Tiempo total: {tiempo_total_epoch:.2f}s")
             print(f"   ⏱️  Tiempo promedio por batch: {tiempo_promedio_epoch:.2f}s")
             print(f"   📦 Batches procesados: {batches_completados_epoch}")
             print(f"{'─'*80}")
 
+
+            
+
+            
+            
             # Evaluación y Early Stopping
-            if early_stopping(gnn_lstm, avg_loss, best_model_path):
+            if early_stopping(gnn_lstm, val_loss, best_model_path):
                 print(f"\n🛑 Early stopping activado en época {epoch + 1}")
                 print(f"   Mejor loss alcanzado: {early_stopping.best_loss:.4f}")
                 break
