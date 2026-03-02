@@ -3,7 +3,7 @@ from data_loader import load_rois_data
 import torch
 import numpy as np
 from sklearn.covariance import LedoitWolf
-from config import data_path
+from config import data_path, df
 
 def create_dfc_matrix(time_fmri_series, window_size=40, step=10):
     """
@@ -71,7 +71,7 @@ def create_dfc_matrix(time_fmri_series, window_size=40, step=10):
     return subject_matrixes
 
 
-rois_time_series, rois_labels= load_rois_data(sites)
+rois_time_series, rois_labels= load_rois_data(sites, df, data_path)
 
 
 
