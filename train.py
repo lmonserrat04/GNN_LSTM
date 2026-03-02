@@ -27,8 +27,8 @@ print("Cargando datos...")
 rois_time_series, rois_labels = load_rois_data(sites, df, Path(data_path))
 lw_matrixes_data              = torch.load(data_path / "lw_matrixes.pt")
 
-X        = [ts for site in sites for ts in rois_time_series[site]]
-y        = np.concatenate([rois_labels[site] for site in sites])
+X         = [ts for site in sites for ts in rois_time_series[site]]
+y         = np.concatenate([rois_labels[site] for site in sites])
 X_tensors = [torch.tensor(ts, dtype=torch.float64) for ts in X]
 y_tensor  = torch.tensor(y, dtype=torch.float64)
 
@@ -53,10 +53,10 @@ class EarlyStopping:
             self.best_loss = val_loss
             self.counter   = 0
             torch.save(model.state_dict(), path)
-            print(f"✅ Mejor modelo guardado (loss: {val_loss:.4f})")
+            print(f"✅ Mejor modelo guardado (val_loss: {val_loss:.4f})")
             return False
         self.counter += 1
-        print(f"⚠️  Sin mejora: {self.counter}/{self.patience}")
+        print(f"⚠️  Sin mejora en val_loss: {self.counter}/{self.patience}")
         if self.counter >= self.patience:
             model.load_state_dict(torch.load(path))
             return True
@@ -66,13 +66,13 @@ class EarlyStopping:
 def run_training(cfg: dict, run_name: str) -> float:
     """
     Entrena el modelo con la configuración dada.
-    - Si existe un checkpoint previo con ese run_name, retoma desde donde estaba.
-    - Al terminar, valida el mejor modelo en idx_test.
-    - Retorna el mejor loss (usado por Optuna como métrica).
+    - Valida al final de cada época y usa val_loss para early stopping.
+    - Si existe checkpoint previo, retoma desde donde estaba.
+    - Retorna el mejor val_loss (usado por Optuna como métrica).
 
-    Los archivos que genera:
-        checkpoint_{run_name}.pth  → checkpoint de entrenamiento (se sobreescribe cada 10 batches)
-        best_model_{run_name}.pth  → mejor modelo según early stopping
+    Archivos generados:
+        checkpoint_{run_name}.pth  → checkpoint cada 10 batches
+        best_model_{run_name}.pth  → mejor modelo según val_loss
     """
     print(f"\n{'='*50}")
     print(f"  Run: {run_name}")
@@ -80,11 +80,9 @@ def run_training(cfg: dict, run_name: str) -> float:
         print(f"  {k} = {v}")
     print(f"{'='*50}\n")
 
-    # ── Modelo ────────────────────────────────────────────────────
-    # IMPORTANTE: pasamos hidden_channels desde cfg para que cada run use el correcto
-    gnn_lstm   = GNN_LSTM(
+    gnn_lstm  = GNN_LSTM(
         num_node_features,
-        hidden_channels=cfg["hidden_channels"],   # <-- bug corregido
+        hidden_channels=cfg["hidden_channels"],
         pool_ratio=cfg["pool_ratio"],
     ).to(device).double()
 
@@ -98,11 +96,10 @@ def run_training(cfg: dict, run_name: str) -> float:
     starting_h = create_starting_hidden_state_graph(num_nodes, gnn_lstm.hidden_channels).to(device)
     starting_c = create_starting_cell_state(num_nodes, gnn_lstm.hidden_channels).to(device)
 
-    # Carga checkpoint si existe — retoma época y batch exactos
     start_epoch, last_batch_index, _ = load_checkpoint(gnn_lstm, optimizer, scheduler, checkpoint_path)
 
-    avg_loss   = 0.0
-    batch_size = cfg["batch_size"]
+    avg_train_loss = 0.0
+    batch_size     = cfg["batch_size"]
 
     # ── Loop de entrenamiento ──────────────────────────────────────
     for epoch in range(start_epoch, cfg["n_epochs"]):
@@ -111,7 +108,7 @@ def run_training(cfg: dict, run_name: str) -> float:
 
         gnn_lstm.train()
         total_loss  = 0.0
-        batch_count = last_batch_index  # si retomamos, arranca desde el batch guardado
+        batch_count = last_batch_index
 
         idxs = np.random.choice(idx_train, size=len(idx_train), replace=False)
 
@@ -156,12 +153,11 @@ def run_training(cfg: dict, run_name: str) -> float:
 
             total_loss  += loss.item()
             batch_count += 1
-            avg_loss     = total_loss / max(1, batch_count)
+            avg_train_loss = total_loss / max(1, batch_count)
 
-            # Guardar checkpoint cada 10 batches con época y batch_count exactos
             if batch_count % 10 == 0:
                 save_checkpoint(gnn_lstm, optimizer, scheduler, epoch, batch_count, loss.item(), checkpoint_path)
-                print(f"   📉 Loss={avg_loss:.4f}  Batch={batch_count}")
+                print(f"   📉 Train loss={avg_train_loss:.4f}  Batch={batch_count}")
 
             cleanup_batch_simple(
                 time_series_batch=time_series_batch,
@@ -181,48 +177,50 @@ def run_training(cfg: dict, run_name: str) -> float:
             print(f"   ✅ Batch {batch_count} — {time.time()-t_batch:.2f}s")
 
         scheduler.step()
-        print(f"📊 Época {epoch+1} | Loss: {avg_loss:.4f} | {time.time()-t_epoch:.1f}s\n")
 
-        if early_stop(gnn_lstm, avg_loss, best_model_path):
+        # ── Validación al final de cada época ─────────────────────
+        gnn_lstm.eval()
+        val_h = create_starting_hidden_state_graph(num_nodes, gnn_lstm.hidden_channels).to(device)
+        val_c = create_starting_cell_state(num_nodes, gnn_lstm.hidden_channels).to(device)
+
+        val_loss = validate(
+            model=gnn_lstm,
+            idx_test=idx_test,
+            batch_size=cfg["batch_size"],
+            epoch=epoch,
+            X_tensors=X_tensors,
+            y_tensor=y_tensor,
+            X_lw_matrixes=lw_matrixes_data,
+            edge_index=edge_index,
+            val_hidden_starting_state=val_h,
+            val_cell_starting_state=val_c,
+            device=device,
+            threshold=0.5,
+        )
+
+        tiempo_epoca = time.time() - t_epoch
+        print(f"\n📊 Época {epoch+1} | Train loss: {avg_train_loss:.4f} | Val loss: {val_loss:.4f} | {tiempo_epoca:.1f}s")
+
+        # Early stopping basado en val_loss (no train loss)
+        if early_stop(gnn_lstm, val_loss, best_model_path):
             print(f"🛑 Early stopping en época {epoch+1}")
             break
 
-        # Al terminar la época completa, el próximo epoch arranca desde batch 0
         last_batch_index = 0
 
-    # ── Validación final con el mejor modelo ──────────────────────
-    print(f"\n🧪 Validando mejor modelo: {best_model_path}")
-    gnn_lstm.load_state_dict(torch.load(best_model_path, map_location=device))
-
-    val_h = create_starting_hidden_state_graph(num_nodes, gnn_lstm.hidden_channels).to(device)
-    val_c = create_starting_cell_state(num_nodes, gnn_lstm.hidden_channels).to(device)
-
-    val_loss = validate(
-        model=gnn_lstm,
-        idx_test=idx_test,
-        batch_size=cfg["batch_size"],
-        epoch=0,                      # epoch no importa para validación final
-        X_tensors=X_tensors,
-        y_tensor=y_tensor,
-        X_lw_matrixes=lw_matrixes_data,
-        edge_index=edge_index,
-        val_hidden_starting_state=val_h,
-        val_cell_starting_state=val_c,
-        device=device,
-        threshold=0.5,
-    )
-    print(f"✅ Val loss final [{run_name}]: {val_loss:.4f}")
+    print(f"\n✅ Entrenamiento finalizado [{run_name}]")
+    print(f"   Mejor val loss: {early_stop.best_loss:.4f}")
 
     return early_stop.best_loss
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# PUNTO DE ENTRADA — edita aquí los hiperparámetros para un run directo
+# PUNTO DE ENTRADA
 # ──────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     cfg = {
-        "pool_ratio":          0.15,   # <── cambia aquí
-        "hidden_channels":     64,     # <── cambia aquí
+        "pool_ratio":          0.15,
+        "hidden_channels":     64,
         "lr":                  1e-3,
         "weight_decay":        1e-2,
         "scheduler_step_size": 20,
@@ -234,9 +232,6 @@ if __name__ == "__main__":
         "min_delta":           0.001,
     }
 
-    # run_name determina el nombre del checkpoint y best_model
-    # ejemplo: pool0.15_hid64 → checkpoint_pool0.15_hid64.pth
     run_name = f"pool{cfg['pool_ratio']}_hid{cfg['hidden_channels']}"
-
     run_training(cfg, run_name=run_name)
     print("=== PROGRAMA FINALIZADO ===")
