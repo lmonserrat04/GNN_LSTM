@@ -183,6 +183,8 @@ def run_training(cfg: dict, run_name: str) -> float:
         val_h = create_starting_hidden_state_graph(num_nodes, gnn_lstm.hidden_channels).to(device)
         val_c = create_starting_cell_state(num_nodes, gnn_lstm.hidden_channels).to(device)
 
+        print("Validando...")
+
         val_loss = validate(
             model=gnn_lstm,
             idx_test=idx_test,
