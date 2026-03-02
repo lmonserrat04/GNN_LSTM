@@ -11,7 +11,9 @@ BASE_DIR = Path.cwd()
 data_path = BASE_DIR / "ABIDE_pcp" / "cpac" / "filt_noglobal" / "cc200"
 csv_path = data_path / "data.csv"
 
-print(data_path)
+df         = pd.read_csv(data_path / "data.csv")
+sites      = df['SITE_ID'].unique()
+
 
 num_nodes = 200
 num_node_features = 200
