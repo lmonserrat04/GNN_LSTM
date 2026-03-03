@@ -56,9 +56,12 @@ class EarlyStopping:
             print(f"✅ Mejor modelo guardado (val_loss: {val_loss:.4f})")
             return False
         self.counter += 1
-        print(f"⚠️  Sin mejora en val_loss: {self.counter}/{self.patience}")
+        print(f"⚠️  Sin mejora en val_loss: {self.counter}/{self.patience} | Mejor: {self.best_loss:.4f} | Actual: {val_loss:.4f}")
         if self.counter >= self.patience:
-            model.load_state_dict(torch.load(path))
+            import os
+            if os.path.exists(path):
+                model.load_state_dict(torch.load(path, map_location='cpu'))
+                print(f"🔄 Modelo restaurado al mejor estado (val_loss: {self.best_loss:.4f})")
             return True
         return False
 
@@ -201,17 +204,24 @@ def run_training(cfg: dict, run_name: str) -> float:
         )
 
         tiempo_epoca = time.time() - t_epoch
-        print(f"\n📊 Época {epoch+1} | Train loss: {avg_train_loss:.4f} | Val loss: {val_loss:.4f} | {tiempo_epoca:.1f}s")
+        print(f"\n📊 Época {epoch+1} | Train loss: {avg_train_loss:.4f} | Val loss actual: {val_loss:.4f} | Mejor val loss: {early_stop.best_loss:.4f} | {tiempo_epoca:.1f}s")
 
         # Early stopping basado en val_loss (no train loss)
         if early_stop(gnn_lstm, val_loss, best_model_path):
-            print(f"🛑 Early stopping en época {epoch+1}")
+            print(f"🛑 Early stopping en época {epoch+1} | Val loss actual: {val_loss:.4f} | Mejor val loss (modelo guardado): {early_stop.best_loss:.4f}")
             break
 
         last_batch_index = 0
 
     print(f"\n✅ Entrenamiento finalizado [{run_name}]")
     print(f"   Mejor val loss: {early_stop.best_loss:.4f}")
+
+    # Señal de completado para search.py
+    import os
+    done_path = f"{run_name}.done"
+    with open(done_path, 'w') as f:
+        f.write(str(early_stop.best_loss))
+    print(f"   📝 .done escrito: {done_path}")
 
     return early_stop.best_loss
 
