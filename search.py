@@ -15,8 +15,8 @@ from train import run_training
 # Parámetros fijos (no se buscan)
 # ──────────────────────────────────────────────────────────────────────────────
 FIXED = {
-    "lr":                  1e-3,
-    "weight_decay":        1e-2,
+    "lr":                  5e-4,
+    "weight_decay":        1e-4,
     "scheduler_step_size": 10,
     "scheduler_gamma":     0.4,
     "batch_size":          32,

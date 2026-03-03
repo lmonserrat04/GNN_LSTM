@@ -29,7 +29,17 @@ lw_matrixes_data              = torch.load(data_path / "lw_matrixes.pt")
 
 X         = [ts for site in sites for ts in rois_time_series[site]]
 y         = np.concatenate([rois_labels[site] for site in sites])
-X_tensors = [torch.tensor(ts, dtype=torch.float64) for ts in X]
+
+def z_score_norm(ts):
+    # ts tiene forma (n_timepoints, n_nodes)
+    mean = ts.mean(axis=0, keepdims=True)
+    std = ts.std(axis=0, keepdims=True)
+    return (ts - mean) / (std + 1e-8) # 1e-8 evita división por cero
+
+# Aplicar antes de convertir a tensores
+X_norm = [z_score_norm(ts) for site in sites for ts in rois_time_series[site]]
+X_tensors = [torch.tensor(ts, dtype=torch.float64) for ts in X_norm]
+#X_tensors = [torch.tensor(ts, dtype=torch.float64) for ts in X]
 y_tensor  = torch.tensor(y, dtype=torch.float64)
 
 idx_train, idx_test = train_test_split(np.arange(len(X)), test_size=0.2, stratify=y, random_state=42)
