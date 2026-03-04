@@ -1,9 +1,6 @@
 import torch
 import torch.nn.functional as F
-from sklearn.metrics import confusion_matrix, roc_auc_score
 from memory_cleanup import cleanup_batch_simple
-
-
 
 def validate(model,idx_test,batch_size,epoch,X_tensors,y_tensor, X_lw_matrixes,edge_index, val_hidden_starting_state, val_cell_starting_state, device,threshold):
     
@@ -49,11 +46,7 @@ def validate(model,idx_test,batch_size,epoch,X_tensors,y_tensor, X_lw_matrixes,e
                 )
 
                 pred = pred.view(-1)
-                pred_prob = torch.sigmoid(pred)
-                y_pred = 1 if pred_prob >= threshold else 0
-
-                
-
+              
                 preds_batch.append(pred)
                 pool_losses_batch.append(pool_loss)
             

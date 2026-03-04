@@ -100,10 +100,7 @@ class GNN_LSTM(nn.Module):
         self.k = max(1, int(num_nodes * pool_ratio))
         self.dg_pool = DGPool(hidden_channels, pool_ratio)
 
-        # Proyección post-pool: [k * hidden_channels] → [hidden_channels]
-        # Preserva la identidad de cada nodo antes de fusionar (en lugar de mean)
-        self.post_pool_fc = nn.Linear(self.k * hidden_channels, hidden_channels)
-
+        
         #LSTM para procesar datos raw
         self.lstm_raw_fmri = nn.LSTM(
             input_size=num_nodes,                   # número de ROIs
@@ -179,7 +176,7 @@ class GNN_LSTM(nn.Module):
 
         # ==== DG-Pooling ====
         pooled_graph, pool_loss = self.dg_pool(hidden_state)  # [N, hidden_channels] → [k, hidden_channels]
-        high_level_embeddings = self.post_pool_fc(pooled_graph.flatten())  # [k * hidden_channels] → [hidden_channels]
+        high_level_embeddings = pooled_graph.mean(dim=0)  # [k, F] → [F]
 
         # ==== LSTM raw fMRI ====
         low_level_embeddings = self.lstm_raw_time_series(time_series)  # [T, N] → [hidden_channels]
@@ -207,8 +204,8 @@ class GNN_LSTM(nn.Module):
         concat_embedding = self.mlp_layer_2(concat_embedding)
         return concat_embedding
 
-    def compute_loss(self, prediction_batch, label_batch, pool_losses_batch, lambda_pool=0.1):
+    def compute_loss(self, prediction_batch, label_batch, pool_losses_batch):
 
         loss_ce = F.binary_cross_entropy_with_logits(prediction_batch, label_batch)
         loss_pool = torch.mean(pool_losses_batch)
-        return loss_ce + lambda_pool * loss_pool
+        return loss_ce + loss_pool

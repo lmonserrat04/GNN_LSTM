@@ -16,7 +16,7 @@ from train import run_training
 # ──────────────────────────────────────────────────────────────────────────────
 FIXED = {
     "lr":                  5e-4,
-    "weight_decay":        1e-4,
+    "weight_decay":        0.05,
     "scheduler_step_size": 10,
     "scheduler_gamma":     0.4,
     "batch_size":          32,
@@ -33,8 +33,8 @@ FIXED = {
 def objective(trial):
     cfg = {
         **FIXED,
-        "pool_ratio":      trial.suggest_categorical("pool_ratio",      [0.15, 0.30, 0.50]),
-        "hidden_channels": trial.suggest_categorical("hidden_channels",  [32, 64, 128]),
+        "pool_ratio":      trial.suggest_categorical("pool_ratio",      [0.25]),
+        "hidden_channels": trial.suggest_categorical("hidden_channels",  [64]),
     }
     # Nombre legible para checkpoint: pool0.15_hid64, pool0.30_hid128, etc.
     run_name = f"pool{cfg['pool_ratio']}_hid{cfg['hidden_channels']}"

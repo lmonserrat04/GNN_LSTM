@@ -95,7 +95,7 @@ def run_training(cfg: dict, run_name: str) -> float:
         idxs = np.random.choice(idx_train, size=len(idx_train), replace=False)
 
         for i in range(last_batch_index * batch_size, len(idxs), batch_size):
-            t_batch    = time.time()
+            #t_batch    = time.time()
             idxs_batch = idxs[i:i+batch_size]
 
             time_series_batch          = [X_tensors[idx].detach().clone().to(device) for idx in idxs_batch]
@@ -211,7 +211,7 @@ def run_training(cfg: dict, run_name: str) -> float:
 # ──────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     cfg = {
-        "pool_ratio":          0.15,
+        "pool_ratio":          0.5,
         "hidden_channels":     64,
         "lr":                  1e-3,
         "weight_decay":        1e-2,
