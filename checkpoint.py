@@ -61,7 +61,7 @@ def save_checkpoint(model, optimizer, scheduler, epoch, current_batch_index, los
 
         # 6. Verificar que el archivo final existe y tiene tamaño
         if os.path.exists(path) and os.path.getsize(path) > 100:  # Mínimo 100 bytes
-            print(f"   ✅ Checkpoint guardado exitosamente en época {epoch}, batch: {current_batch_index}")
+            print(f"   ✅ Checkpoint guardado exitosamente en época {epoch}")
             
         else:
             raise IOError("El archivo final no se creó correctamente")

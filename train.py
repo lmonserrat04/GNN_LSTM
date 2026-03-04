@@ -1,4 +1,3 @@
-import pandas as pd
 import numpy as np
 from pathlib import Path
 import torch
@@ -6,12 +5,13 @@ import time
 from sklearn.model_selection import train_test_split
 from torch.optim.lr_scheduler import StepLR
 
+
 from memory_cleanup import cleanup_batch_simple
 from config import data_path, num_nodes, num_node_features, sites, df
 from data_loader import load_rois_data
 from model import GNN_LSTM
 from checkpoint import save_checkpoint, load_checkpoint
-from utils import set_seed, create_starting_hidden_state_graph, create_starting_cell_state, get_edge_indexes_fully_connected
+from utils import set_seed, create_starting_hidden_state_graph, create_starting_cell_state, get_edge_indexes_fully_connected, EarlyStopping, z_score_norm
 from validation import validate
 
 print("Torch version:", torch.__version__)
@@ -30,12 +30,6 @@ lw_matrixes_data              = torch.load(data_path / "lw_matrixes.pt")
 X         = [ts for site in sites for ts in rois_time_series[site]]
 y         = np.concatenate([rois_labels[site] for site in sites])
 
-def z_score_norm(ts):
-    # ts tiene forma (n_timepoints, n_nodes)
-    mean = ts.mean(axis=0, keepdims=True)
-    std = ts.std(axis=0, keepdims=True)
-    return (ts - mean) / (std + 1e-8) # 1e-8 evita división por cero
-
 # Aplicar antes de convertir a tensores
 X_norm = [z_score_norm(ts) for site in sites for ts in rois_time_series[site]]
 X_tensors = [torch.tensor(ts, dtype=torch.float64) for ts in X_norm]
@@ -50,31 +44,6 @@ print("✅ Datos listos\n")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-
-class EarlyStopping:
-    def __init__(self, patience, min_delta):
-        self.patience  = patience
-        self.min_delta = min_delta
-        self.best_loss = float('inf')
-        self.counter   = 0
-
-    def __call__(self, model, val_loss, path):
-        if val_loss < self.best_loss - self.min_delta:
-            self.best_loss = val_loss
-            self.counter   = 0
-            torch.save(model.state_dict(), path)
-            print(f"✅ Mejor modelo guardado (val_loss: {val_loss:.4f})")
-            return False
-        self.counter += 1
-        print(f"⚠️  Sin mejora en val_loss: {self.counter}/{self.patience} | Mejor: {self.best_loss:.4f} | Actual: {val_loss:.4f}")
-        if self.counter >= self.patience:
-            import os
-            if os.path.exists(path):
-                model.load_state_dict(torch.load(path, map_location='cpu'))
-                print(f"🔄 Modelo restaurado al mejor estado (val_loss: {self.best_loss:.4f})")
-            return True
-        return False
-
 
 def run_training(cfg: dict, run_name: str) -> float:
     """
@@ -168,9 +137,8 @@ def run_training(cfg: dict, run_name: str) -> float:
             batch_count += 1
             avg_train_loss = total_loss / max(1, batch_count)
 
-            if batch_count % 10 == 0:
-                save_checkpoint(gnn_lstm, optimizer, scheduler, epoch, batch_count, loss.item(), checkpoint_path)
-                print(f"   📉 Train loss={avg_train_loss:.4f}  Batch={batch_count}")
+            #if batch_count % 10 == 0:
+                
 
             cleanup_batch_simple(
                 time_series_batch=time_series_batch,
@@ -187,10 +155,12 @@ def run_training(cfg: dict, run_name: str) -> float:
                 },
             )
 
-            print(f"   ✅ Batch {batch_count} — {time.time()-t_batch:.2f}s")
+            #print(f"   ✅ Batch {batch_count} — {time.time()-t_batch:.2f}s")
 
         scheduler.step()
 
+        save_checkpoint(gnn_lstm, optimizer, scheduler, epoch, batch_count, loss.item(), checkpoint_path)
+        
         # ── Validación al final de cada época ─────────────────────
         gnn_lstm.eval()
         val_h = create_starting_hidden_state_graph(num_nodes, gnn_lstm.hidden_channels).to(device)

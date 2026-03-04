@@ -97,7 +97,12 @@ class GNN_LSTM(nn.Module):
         self.layer_norm = nn.LayerNorm(hidden_channels * 2)
 
         # Dynamic Graph Pooling
+        self.k = max(1, int(num_nodes * pool_ratio))
         self.dg_pool = DGPool(hidden_channels, pool_ratio)
+
+        # Proyección post-pool: [k * hidden_channels] → [hidden_channels]
+        # Preserva la identidad de cada nodo antes de fusionar (en lugar de mean)
+        self.post_pool_fc = nn.Linear(self.k * hidden_channels, hidden_channels)
 
         #LSTM para procesar datos raw
         self.lstm_raw_fmri = nn.LSTM(
@@ -111,6 +116,10 @@ class GNN_LSTM(nn.Module):
         self.mlp_layer_1 = nn.Linear(hidden_channels * 2, hidden_channels)
         self.mlp_layer_2 = nn.Linear(hidden_channels, 1)
         self.mlp_dropout = nn.Dropout(p=0.3)
+
+    def gconv(self, gcn_layer, x, edge_index):
+        """Aplica GCNConv + relu, implementando Gconv según Ecuación 13 del paper."""
+        return F.relu(gcn_layer(x, edge_index))
 
     def forward(self, lw_matrixes_sequence, edge_index, hidden_state, cell_state, time_series):
         """
@@ -146,20 +155,20 @@ class GNN_LSTM(nn.Module):
             
             # ==== GATES ====
             input_gate = torch.sigmoid(
-                self.input_gnn(x, edge_index) +
-                self.input_gnn_hidden_state(hidden_state, edge_index)
+                self.gconv(self.input_gnn, x, edge_index) +
+                self.gconv(self.input_gnn_hidden_state, hidden_state, edge_index)
             )
             forget_gate = torch.sigmoid(
-                self.forget_gnn(x, edge_index) +
-                self.forget_gnn_hidden_state(hidden_state, edge_index)
+                self.gconv(self.forget_gnn, x, edge_index) +
+                self.gconv(self.forget_gnn_hidden_state, hidden_state, edge_index)
             )
             output_gate = torch.sigmoid(
-                self.output_gnn(x, edge_index) +
-                self.output_gnn_hidden_state(hidden_state, edge_index)
+                self.gconv(self.output_gnn, x, edge_index) +
+                self.gconv(self.output_gnn_hidden_state, hidden_state, edge_index)
             )
             modulation = torch.relu(
-                self.modulation_gnn(x, edge_index) +
-                self.modulation_gnn_hidden_state(hidden_state, edge_index)
+                self.gconv(self.modulation_gnn, x, edge_index) +
+                self.gconv(self.modulation_gnn_hidden_state, hidden_state, edge_index)
             )
 
             # ==== CELL STATE ====
@@ -170,7 +179,7 @@ class GNN_LSTM(nn.Module):
 
         # ==== DG-Pooling ====
         pooled_graph, pool_loss = self.dg_pool(hidden_state)  # [N, hidden_channels] → [k, hidden_channels]
-        high_level_embeddings = torch.mean(pooled_graph, dim=0)  # [k, hidden_channels] → [hidden_channels]
+        high_level_embeddings = self.post_pool_fc(pooled_graph.flatten())  # [k * hidden_channels] → [hidden_channels]
 
         # ==== LSTM raw fMRI ====
         low_level_embeddings = self.lstm_raw_time_series(time_series)  # [T, N] → [hidden_channels]
