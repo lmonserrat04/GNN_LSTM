@@ -10,7 +10,8 @@ import torch.nn as nn
 
 from config import data_path, num_nodes, num_node_features, test_site, BASE_DIR
 from data_loader import load_rois_data
-from model import GNN_LSTM
+#from model import GNN_LSTM
+from model_v1 import GNN_LSTM
 from metrics import calculate_metrics, print_metrics
 from utils import set_seed, create_starting_hidden_state_graph, create_starting_cell_state, get_edge_indexes_fully_connected, z_score_norm
 
@@ -48,13 +49,7 @@ print("✅ Datos de grafos cargados correctamente")
 # --- Evaluación ---
 
 print("7. Inicializando modelo y optimizador...")
-gnn_lstm = GNN_LSTM(num_node_features, hidden_channels=128, pool_ratio= 0.15).double()
-
-checkpoint = torch.load(BASE_DIR / 'best_model_pool0.15_hid128.pth', map_location=device)
-for k, v in checkpoint.items():
-    print(k, v.shape)
-exit()
-
+gnn_lstm = GNN_LSTM(num_node_features, hidden_channels=128).double()
 gnn_lstm.load_state_dict(torch.load(BASE_DIR / 'best_model_pool0.15_hid128.pth', map_location=device))
 gnn_lstm = gnn_lstm.to(device)
 
