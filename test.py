@@ -7,9 +7,8 @@ import numpy as np
 from pathlib import Path
 import torch
 import torch.nn as nn
-from sklearn.model_selection import train_test_split
 
-from config import data_path, num_nodes, num_node_features, test_site, sites, BASE_DIR
+from config import data_path, num_nodes, num_node_features, test_site, BASE_DIR
 from data_loader import load_rois_data
 from model import GNN_LSTM
 from metrics import calculate_metrics, print_metrics
@@ -49,7 +48,7 @@ print("✅ Datos de grafos cargados correctamente")
 # --- Evaluación ---
 
 print("7. Inicializando modelo y optimizador...")
-gnn_lstm = GNN_LSTM(num_node_features).double()
+gnn_lstm = GNN_LSTM(num_node_features, hidden_channels=128, pool_ratio= 0.15).double()
 gnn_lstm.load_state_dict(torch.load(BASE_DIR / 'best_model_pool0.15_hid128.pth', map_location=device))
 gnn_lstm = gnn_lstm.to(device)
 
