@@ -50,7 +50,7 @@ print("✅ Datos de grafos cargados correctamente")
 
 print("7. Inicializando modelo y optimizador...")
 gnn_lstm = GNN_LSTM(num_node_features).double()
-gnn_lstm.load_state_dict(torch.load(BASE_DIR / 'best_model_pool0.15_hid128.pth ', map_location=device))
+gnn_lstm.load_state_dict(torch.load(BASE_DIR / 'best_model_pool0.15_hid128.pth', map_location=device))
 gnn_lstm = gnn_lstm.to(device)
 
 X = []
