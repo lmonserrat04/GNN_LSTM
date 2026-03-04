@@ -78,7 +78,7 @@ def run_training(cfg: dict, run_name: str) -> float:
     starting_h = create_starting_hidden_state_graph(num_nodes, gnn_lstm.hidden_channels).to(device)
     starting_c = create_starting_cell_state(num_nodes, gnn_lstm.hidden_channels).to(device)
 
-    start_epoch, last_batch_index, _ = load_checkpoint(gnn_lstm, optimizer, scheduler, checkpoint_path)
+    start_epoch, last_batch_index, _ = load_checkpoint(gnn_lstm, optimizer, scheduler, early_stop, checkpoint_path)
 
     avg_train_loss = 0.0
     batch_size     = cfg["batch_size"]
@@ -159,7 +159,7 @@ def run_training(cfg: dict, run_name: str) -> float:
 
         scheduler.step()
 
-        save_checkpoint(gnn_lstm, optimizer, scheduler, epoch, batch_count, loss.item(), checkpoint_path)
+        save_checkpoint(gnn_lstm, optimizer, scheduler, early_stop, epoch, batch_count, loss.item(), checkpoint_path)
         
         # ── Validación al final de cada época ─────────────────────
         gnn_lstm.eval()
