@@ -4,7 +4,7 @@ import shutil
 import torch
 
 
-def save_checkpoint(model, optimizer, scheduler, epoch, current_batch_index, loss, path='checkpoint.pth'):
+def save_checkpoint(model, optimizer, scheduler,early_stopper, epoch, current_batch_index, loss, path='checkpoint.pth'):
     """Guarda el estado completo del entrenamiento de forma atómica"""
     print(f"   💾 Guardando checkpoint para época {epoch}...")
 
@@ -17,6 +17,7 @@ def save_checkpoint(model, optimizer, scheduler, epoch, current_batch_index, los
             'scheduler_state_dict': scheduler.state_dict(),
             'loss': loss,
             'batch_idx': current_batch_index,
+            'epochs_without_val_loss_improvement' : early_stopper.counter
         }
 
         # 2. Guardar en un archivo temporal primero
@@ -33,7 +34,7 @@ def save_checkpoint(model, optimizer, scheduler, epoch, current_batch_index, los
 
             # Verificar que todas las claves necesarias están presentes
             required_keys = ['epoch', 'model_state_dict', 'optimizer_state_dict',
-                           'scheduler_state_dict', 'loss', 'batch_idx']
+                           'scheduler_state_dict', 'loss', 'batch_idx', 'epochs_without_val_loss_improvement']
             for key in required_keys:
                 if key not in test_checkpoint:
                     raise ValueError(f"Clave faltante en checkpoint: {key}")
@@ -79,7 +80,7 @@ def save_checkpoint(model, optimizer, scheduler, epoch, current_batch_index, los
                 pass
 
 
-def load_checkpoint(model, optimizer, scheduler, path):
+def load_checkpoint(model, optimizer, scheduler,early_stopper, path):
     """Carga el estado completo del entrenamiento con recuperación ante fallos"""
     print(f"   📥 Intentando cargar checkpoint desde {path}...")
 
@@ -111,7 +112,7 @@ def load_checkpoint(model, optimizer, scheduler, path):
                     continue
 
                 required_keys = ['epoch', 'model_state_dict', 'optimizer_state_dict',
-                               'scheduler_state_dict', 'loss', 'batch_idx']
+                               'scheduler_state_dict', 'loss', 'batch_idx', 'epochs_without_val_loss_improvement']
                 missing_keys = [k for k in required_keys if k not in checkpoint]
 
                 if missing_keys:
@@ -122,13 +123,15 @@ def load_checkpoint(model, optimizer, scheduler, path):
                 model.load_state_dict(checkpoint['model_state_dict'])
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
                 scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-
+                
+                early_stopper.counter = checkpoint['epochs_without_val_loss_improvement']
                 start_epoch = checkpoint['epoch']
                 current_batch_index = checkpoint['batch_idx']
                 loss = checkpoint['loss']
 
                 print(f"   ✅ Checkpoint cargado desde {checkpoint_path}")
                 print(f"   📊 Continuando desde época {start_epoch}, batch: {current_batch_index}")
+                print(f"   ⚠️Sin mejora en val_loss: {early_stopper.counter}/{early_stopper.patience} ")
                 print(f"   📉 Pérdida anterior: {loss:.6f}")
 
                 # Si cargamos desde backup, restaurar como checkpoint principal
