@@ -204,13 +204,8 @@ if __name__ == "__main__":
         "weight_decay":        1e-3,
         "scheduler_step_size": 10,
         "scheduler_gamma":     0.4,
-        "batch_size":          32,
+        "batch_size":          4,
         "n_epochs":            150,
         "max_grad_norm":       1.0,
-        "patience":            35,
-        "min_delta":           0.001,
-    }
 
-    run_name = f"pool{cfg['pool_ratio']}_hid{cfg['hidden_channels']}"
-    run_training(cfg, run_name=run_name)
-    print("=== PROGRAMA FINALIZADO ===")
+    }

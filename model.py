@@ -127,7 +127,7 @@ class GNN_LSTM(nn.Module):
         high_level_embeddings = pooled_graph.mean(dim=0)  # [k, F] → [F]
 
         # ==== LSTM raw fMRI ====
-        low_level_embeddings = torch.zeros(self.hidden_channels, dtype= torch.float64, device= device)
+        low_level_embeddings = self.lstm_raw_time_series(time_series)
 
 
         # ==== Fusión ====
@@ -153,7 +153,7 @@ class GNN_LSTM(nn.Module):
         x = self.mlp_layer_3(x)
         return x
 
-    def compute_loss(self, prediction_batch, label_batch, pool_losses_batch):
+    def compute_loss(self, prediction_batch, label_batch, pool_losses_batch, lambda_pool = 0.01):
         loss_ce = F.binary_cross_entropy_with_logits(prediction_batch, label_batch)
         loss_pool = torch.mean(pool_losses_batch)
-        return loss_ce + loss_pool
+        return loss_ce + lambda_pool * loss_pool
