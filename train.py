@@ -43,8 +43,6 @@ idx_train, idx_test = train_test_split(np.arange(len(X)), test_size=0.2, stratif
 
 
 torch.set_printoptions(threshold=torch.inf)
-print("✅ Datos listos\n")
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -61,7 +59,11 @@ def run_training(cfg: dict, run_name: str) -> float:
         pool_ratio=cfg["pool_ratio"],
     ).to(device).double()
 
-    optimizer  = torch.optim.Adam(gnn_lstm.parameters(), lr=cfg["lr"], weight_decay=cfg["weight_decay"])
+    #optimizer  = torch.optim.Adam(gnn_lstm.parameters(), lr=cfg["lr"], weight_decay=cfg["weight_decay"])
+    optimizer = torch.optim.Adam([
+        {'params': [p for n, p in gnn_lstm.named_parameters() if 'gnn' in n], 'lr': cfg["lr"] * 10},
+        {'params': [p for n, p in gnn_lstm.named_parameters() if 'gnn' not in n], 'lr': cfg["lr"]},
+    ], weight_decay=cfg["weight_decay"])
     scheduler  = StepLR(optimizer, step_size=cfg["scheduler_step_size"], gamma=cfg["scheduler_gamma"])
     early_stop = EarlyStopping(patience=cfg["patience"], min_delta=cfg["min_delta"])
 
@@ -126,6 +128,16 @@ def run_training(cfg: dict, run_name: str) -> float:
 
             optimizer.zero_grad()
             loss.backward()
+
+            # En train.py después de loss.backward(), antes de optimizer.step()
+            # for name, param in gnn_lstm.named_parameters():
+            #     if param.grad is not None:
+            #         print(f"{name}: grad_norm={param.grad.norm():.6f}")
+            #     else:
+            #         print(f"{name}: grad=None")
+            
+
+
             torch.nn.utils.clip_grad_norm_(gnn_lstm.parameters(), max_norm=cfg["max_grad_norm"])
             optimizer.step()
 
@@ -206,8 +218,8 @@ if __name__ == "__main__":
         "scheduler_gamma":     0.4,
         "batch_size":          32,
         "n_epochs":            150,
-        "max_grad_norm":       1.0,
-        "patience":            100,
+        "max_grad_norm":       5.0,
+        "patience":            35,
         "min_delta":           0.001,
 
     }

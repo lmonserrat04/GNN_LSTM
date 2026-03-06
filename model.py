@@ -60,7 +60,14 @@ class GNN_LSTM(nn.Module):
         self.output_gnn_hidden_state = GCNConv(hidden_channels, hidden_channels)
         self.modulation_gnn_hidden_state = GCNConv(hidden_channels, hidden_channels)
 
+        for gnn in [self.input_gnn, self.forget_gnn, self.output_gnn, self.modulation_gnn,
+            self.input_gnn_hidden_state, self.forget_gnn_hidden_state,
+            self.output_gnn_hidden_state, self.modulation_gnn_hidden_state]:
+            nn.init.xavier_uniform_(gnn.lin.weight, gain=2.0)
+
         self.layer_norm = nn.LayerNorm(hidden_channels * 2)
+
+        self.mod_norm = nn.LayerNorm(hidden_channels)
 
         # Dynamic Graph Pooling
         self.k = max(1, int(num_nodes * pool_ratio))
@@ -82,8 +89,12 @@ class GNN_LSTM(nn.Module):
         self.mlp_ln = nn.LayerNorm(hidden_channels)
 
     def gconv(self, gcn_layer, x, edge_index, edge_weight=None):
-        """Aplica GCNConv + relu con edge weights opcionales."""
+        """GCNConv con relu — para input, forget, output gates."""
         return F.relu(gcn_layer(x, edge_index, edge_weight=edge_weight))
+
+    def gconv_linear(self, gcn_layer, x, edge_index, edge_weight=None):
+        """GCNConv sin activación — para modulation, activación se aplica fuera."""
+        return gcn_layer(x, edge_index, edge_weight=edge_weight)
 
     def forward(self, lw_matrixes_sequence, hidden_state, cell_state, time_series):
 
@@ -91,10 +102,12 @@ class GNN_LSTM(nn.Module):
             print("⚠️ NaN detectado en hidden o cell")
 
         for i, x in enumerate(lw_matrixes_sequence):
+            
             x = x.double()
             edge_index = get_edge_indexes_sparse(x, threshold=0.5, device=device)
             edge_weight = torch.abs(x[edge_index[0], edge_index[1]])
             
+                        
 
             # ==== GATES ====
             input_gate = torch.sigmoid(
@@ -109,10 +122,20 @@ class GNN_LSTM(nn.Module):
                 self.gconv(self.output_gnn, x, edge_index, edge_weight) +
                 self.gconv(self.output_gnn_hidden_state, hidden_state, edge_index, edge_weight)
             )
-            modulation = torch.relu(
-                self.gconv(self.modulation_gnn, x, edge_index, edge_weight) +
-                self.gconv(self.modulation_gnn_hidden_state, hidden_state, edge_index, edge_weight)
+            mod_raw = (
+                self.gconv_linear(self.modulation_gnn, x, edge_index, edge_weight) +
+                self.gconv_linear(self.modulation_gnn_hidden_state, hidden_state, edge_index, edge_weight)
             )
+            modulation = torch.relu(self.mod_norm(mod_raw))
+
+            # if i == 0:  # solo primer timestep para no saturar la consola
+            #     print(f"input_gate  mean={input_gate.mean():.4f} std={input_gate.std():.4f}")
+            #     print(f"forget_gate mean={forget_gate.mean():.4f} std={forget_gate.std():.4f}")
+            #     print(f"output_gate mean={output_gate.mean():.4f} std={output_gate.std():.4f}")
+            #     print(f"modulation  mean={modulation.mean():.4f} std={modulation.std():.4f}")
+            
+            # if i % 5 == 0:
+            #     print(f"[t={i}] input={input_gate.mean():.4f} forget={forget_gate.mean():.4f} output={output_gate.mean():.4f} mod={modulation.mean():.4f}")
 
             # ==== CELL STATE ====
             cell_state = torch.tanh(input_gate * modulation + forget_gate * cell_state)
