@@ -11,7 +11,7 @@ import torch.nn as nn
 from config import data_path, num_nodes, num_node_features, test_site, BASE_DIR
 from data_loader import load_rois_data
 #from model import GNN_LSTM
-from model_v1 import GNN_LSTM
+
 from metrics import calculate_metrics, print_metrics
 from utils import set_seed, create_starting_hidden_state_graph, create_starting_cell_state, get_edge_indexes_fully_connected, z_score_norm
 

@@ -22,7 +22,6 @@ python create_matrixes.py --modo test
 
 # Todos → guarda lw_matrixes_all.pt
 python create_matrixes.py --modo all
-
 """
 
 
@@ -106,9 +105,7 @@ if __name__ == "__main__":
 
     if args.modo == "train":
         create_matrixes(list(sites), "lw_matrixes.pt")
-
     elif args.modo == "test":
         create_matrixes([test_site], "lw_matrixes_test.pt")
-
     elif args.modo == "all":
         create_matrixes(list(sites) + [test_site], "lw_matrixes_all.pt")

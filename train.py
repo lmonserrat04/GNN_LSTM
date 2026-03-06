@@ -5,7 +5,6 @@ import time
 from sklearn.model_selection import train_test_split
 from torch.optim.lr_scheduler import StepLR
 
-
 from memory_cleanup import cleanup_batch_simple
 from config import data_path, num_nodes, num_node_features, sites, df
 from data_loader import load_rois_data
@@ -25,19 +24,21 @@ set_seed()
 print("Cargando datos...")
 
 rois_time_series, rois_labels = load_rois_data(sites, df, Path(data_path))
-lw_matrixes_data              = torch.load(data_path / "lw_matrixes.pt")
+lw_matrixes_data              = torch.load(data_path / "lw_matrixes.pt", weights_only=False)
 
 X         = [ts for site in sites for ts in rois_time_series[site]]
 y         = np.concatenate([rois_labels[site] for site in sites])
 
-# Aplicar antes de convertir a tensores
-X_norm = [z_score_norm(ts) for site in sites for ts in rois_time_series[site]]
+X_norm    = [z_score_norm(ts) for site in sites for ts in rois_time_series[site]]
 X_tensors = [torch.tensor(ts, dtype=torch.float64) for ts in X_norm]
-#X_tensors = [torch.tensor(ts, dtype=torch.float64) for ts in X]
 y_tensor  = torch.tensor(y, dtype=torch.float64)
 
 idx_train, idx_test = train_test_split(np.arange(len(X)), test_size=0.2, stratify=y, random_state=42)
 edge_index = get_edge_indexes_fully_connected(num_nodes, device)
+
+idx_train = idx_train[:8]
+idx_test = idx_test[:8]
+
 
 torch.set_printoptions(threshold=torch.inf)
 print("✅ Datos listos\n")
@@ -46,16 +47,6 @@ print("✅ Datos listos\n")
 # ──────────────────────────────────────────────────────────────────────────────
 
 def run_training(cfg: dict, run_name: str) -> float:
-    """
-    Entrena el modelo con la configuración dada.
-    - Valida al final de cada época y usa val_loss para early stopping.
-    - Si existe checkpoint previo, retoma desde donde estaba.
-    - Retorna el mejor val_loss (usado por Optuna como métrica).
-
-    Archivos generados:
-        checkpoint_{run_name}.pth  → checkpoint cada 10 batches
-        best_model_{run_name}.pth  → mejor modelo según val_loss
-    """
     print(f"\n{'='*50}")
     print(f"  Run: {run_name}")
     for k, v in cfg.items():
@@ -80,6 +71,10 @@ def run_training(cfg: dict, run_name: str) -> float:
 
     start_epoch, last_batch_index, _ = load_checkpoint(gnn_lstm, optimizer, scheduler, early_stop, checkpoint_path)
 
+    # Reset batch index si ya completó la época completa
+    if last_batch_index * cfg["batch_size"] >= len(idx_train):
+        last_batch_index = 0
+
     avg_train_loss = 0.0
     batch_size     = cfg["batch_size"]
 
@@ -91,11 +86,11 @@ def run_training(cfg: dict, run_name: str) -> float:
         gnn_lstm.train()
         total_loss  = 0.0
         batch_count = last_batch_index
+        loss        = torch.tensor(0.0, device=device)  # default si el loop no ejecuta
 
         idxs = np.random.choice(idx_train, size=len(idx_train), replace=False)
 
         for i in range(last_batch_index * batch_size, len(idxs), batch_size):
-            #t_batch    = time.time()
             idxs_batch = idxs[i:i+batch_size]
 
             time_series_batch          = [X_tensors[idx].detach().clone().to(device) for idx in idxs_batch]
@@ -137,9 +132,6 @@ def run_training(cfg: dict, run_name: str) -> float:
             batch_count += 1
             avg_train_loss = total_loss / max(1, batch_count)
 
-            #if batch_count % 10 == 0:
-                
-
             cleanup_batch_simple(
                 time_series_batch=time_series_batch,
                 lw_matrixes_sequence_batch=lw_matrixes_sequence_batch,
@@ -155,12 +147,9 @@ def run_training(cfg: dict, run_name: str) -> float:
                 },
             )
 
-            #print(f"   ✅ Batch {batch_count} — {time.time()-t_batch:.2f}s")
-
         scheduler.step()
-
         save_checkpoint(gnn_lstm, optimizer, scheduler, early_stop, epoch, batch_count, loss.item(), checkpoint_path)
-        
+
         # ── Validación al final de cada época ─────────────────────
         gnn_lstm.eval()
         val_h = create_starting_hidden_state_graph(num_nodes, gnn_lstm.hidden_channels).to(device)
@@ -186,7 +175,6 @@ def run_training(cfg: dict, run_name: str) -> float:
         tiempo_epoca = time.time() - t_epoch
         print(f"\n📊 Época {epoch+1} | Train loss: {avg_train_loss:.4f} | Val loss actual: {val_loss:.4f} | Mejor val loss: {early_stop.best_loss:.4f} | {tiempo_epoca:.1f}s")
 
-        # Early stopping basado en val_loss (no train loss)
         if early_stop(gnn_lstm, val_loss, best_model_path):
             print(f"🛑 Early stopping en época {epoch+1} | Val loss actual: {val_loss:.4f} | Mejor val loss (modelo guardado): {early_stop.best_loss:.4f}")
             break
@@ -196,7 +184,6 @@ def run_training(cfg: dict, run_name: str) -> float:
     print(f"\n✅ Entrenamiento finalizado [{run_name}]")
     print(f"   Mejor val loss: {early_stop.best_loss:.4f}")
 
-    # Señal de completado para search.py
     import os
     done_path = f"{run_name}.done"
     with open(done_path, 'w') as f:
@@ -212,15 +199,15 @@ def run_training(cfg: dict, run_name: str) -> float:
 if __name__ == "__main__":
     cfg = {
         "pool_ratio":          0.5,
-        "hidden_channels":     64,
-        "lr":                  1e-3,
-        "weight_decay":        1e-2,
-        "scheduler_step_size": 20,
+        "hidden_channels":     128,
+        "lr":                  5e-4,
+        "weight_decay":        0.05,
+        "scheduler_step_size": 10,
         "scheduler_gamma":     0.4,
         "batch_size":          4,
         "n_epochs":            150,
         "max_grad_norm":       1.0,
-        "patience":            30,
+        "patience":            150,
         "min_delta":           0.001,
     }
 
