@@ -38,8 +38,8 @@ y_tensor  = torch.tensor(y, dtype=torch.float64)
 idx_train, idx_test = train_test_split(np.arange(len(X)), test_size=0.2, stratify=y, random_state=42)
 #edge_index = get_edge_indexes_fully_connected(num_nodes, device)
 
-idx_train = idx_train[:8]
-idx_test = idx_test[:8]
+#idx_train = idx_train[:8]
+#idx_test = idx_test[:8]
 
 
 torch.set_printoptions(threshold=torch.inf)

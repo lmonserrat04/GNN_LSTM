@@ -10,7 +10,6 @@ import torch
 import numpy as np
 from sklearn.covariance import LedoitWolf
 from tqdm import tqdm
-from multiprocessing import Pool
 from utils import z_score_norm
 
 """
@@ -26,7 +25,7 @@ python create_matrixes.py --modo all
 
 
 def create_dfc_matrix(time_fmri_series, window_size=40, step=10):
-    subject_data = np.array(time_fmri_series) if not isinstance(time_fmri_series, np.ndarray) else time_fmri_series
+    subject_data = np.array(time_fmri_series, dtype=np.float32) if not isinstance(time_fmri_series, np.ndarray) else time_fmri_series.astype(np.float32)
     subject_data = z_score_norm(subject_data)
     n_time       = subject_data.shape[0]
     matrixes     = []
@@ -37,60 +36,51 @@ def create_dfc_matrix(time_fmri_series, window_size=40, step=10):
         D     = np.sqrt(np.diag(C_reg))
         R     = C_reg / np.outer(D, D)
         np.fill_diagonal(R, 0)
-        matrixes.append(R)
+        matrixes.append(R.astype(np.float32))  # float32 desde el inicio
 
     return matrixes
-
-
-def _worker(args):
-    idx, time_series = args
-    try:
-        return idx, create_dfc_matrix(time_series), None
-    except Exception as e:
-        return idx, [], str(e)
 
 
 def create_matrixes(target_sites, save_filename):
     print(f"Sitios a procesar: {target_sites}")
     print("Cargando datos de ROIs...")
-    rois_time_series, rois_labels = load_rois_data(target_sites, df, data_path)
+    rois_time_series, _ = load_rois_data(target_sites, df, data_path)
 
     tasks = []
-    idx   = 0
     for site in target_sites:
         subjects_in_site = int((df['SITE_ID'] == site).sum())
         for i in range(subjects_in_site):
-            tasks.append((idx, rois_time_series[site][i]))
-            idx += 1
+            tasks.append((site, i, rois_time_series[site][i]))
 
     total = len(tasks)
-    print(f"Total sujetos: {total} | Usando 6 cores\n")
+    save_path = data_path / save_filename
+    print(f"Total sujetos: {total} | Procesamiento secuencial para ahorrar RAM\n")
 
-    results = [None] * total
+    # Procesar y guardar secuencialmente — sin multiprocessing
+    results_tensors = []
     errores = []
 
-    with Pool(processes=6) as pool:
-        with tqdm(total=total, desc="Creando matrices DFC", unit="sujeto") as pbar:
-            for idx, matrixes, error in pool.imap_unordered(_worker, tasks):
-                results[idx] = matrixes
-                if error:
-                    errores.append((idx, error))
-                    print(f"\n⚠️  Error sujeto {idx}: {error}")
-                pbar.update(1)
+    for idx, (site, i, time_series) in enumerate(tqdm(tasks, desc="Creando matrices DFC", unit="sujeto")):
+        try:
+            matrixes = create_dfc_matrix(time_series)
+            tensors  = [torch.from_numpy(m) for m in matrixes]
+            results_tensors.append(tensors)
 
-    print("\n🔄 Convirtiendo a tensores...")
-    results_tensors = [
-        [torch.from_numpy(m) for m in subject_matrixes]
-        for subject_matrixes in tqdm(results, desc="Convirtiendo", unit="sujeto")
-    ]
+            # Liberar memoria inmediatamente
+            del matrixes, tensors, time_series
+            tasks[idx] = (site, i, None)  # liberar la serie temporal del task
 
-    save_path = data_path / save_filename
+        except Exception as e:
+            errores.append((idx, str(e)))
+            results_tensors.append([])
+            print(f"\n⚠️ Error sujeto {idx}: {e}")
+
     print(f"\n💾 Guardando en {save_path}...")
     torch.save(results_tensors, save_path)
 
     print(f"✅ Guardado: {len(results_tensors)} sujetos en {save_filename}")
     if errores:
-        print(f"⚠️  {len(errores)} errores: {errores}")
+        print(f"⚠️ {len(errores)} errores: {errores}")
 
 
 if __name__ == "__main__":

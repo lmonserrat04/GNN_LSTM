@@ -91,6 +91,7 @@ class GNN_LSTM(nn.Module):
             print("⚠️ NaN detectado en hidden o cell")
 
         for i, x in enumerate(lw_matrixes_sequence):
+            x = x.double()
             edge_index = get_edge_indexes_sparse(x, threshold=0.5, device=device)
             edge_weight = torch.abs(x[edge_index[0], edge_index[1]])
             
@@ -126,7 +127,8 @@ class GNN_LSTM(nn.Module):
         high_level_embeddings = pooled_graph.mean(dim=0)  # [k, F] → [F]
 
         # ==== LSTM raw fMRI ====
-        low_level_embeddings = torch.zeros(self.hidden_channels,dtype=torch.float64, device = device)
+        low_level_embeddings = torch.zeros(self.hidden_channels, dtype= torch.float64, device= device)
+
 
         # ==== Fusión ====
         fusion = torch.cat([high_level_embeddings, low_level_embeddings], dim=0)
