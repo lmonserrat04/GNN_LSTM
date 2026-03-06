@@ -85,7 +85,7 @@ class GNN_LSTM(nn.Module):
         self.mlp_layer_1 = nn.Linear(hidden_channels * 2, hidden_channels)
         self.mlp_layer_2 = nn.Linear(hidden_channels, hidden_channels // 2)
         self.mlp_layer_3 = nn.Linear(hidden_channels // 2, 1)
-        #self.mlp_dropout = nn.Dropout(p=0.5)
+        self.mlp_dropout = nn.Dropout(p=0.5)
         self.mlp_ln = nn.LayerNorm(hidden_channels)
 
     def gconv(self, gcn_layer, x, edge_index, edge_weight=None):
@@ -128,15 +128,7 @@ class GNN_LSTM(nn.Module):
             )
             modulation = torch.relu(self.mod_norm(mod_raw))
 
-            # if i == 0:  # solo primer timestep para no saturar la consola
-            #     print(f"input_gate  mean={input_gate.mean():.4f} std={input_gate.std():.4f}")
-            #     print(f"forget_gate mean={forget_gate.mean():.4f} std={forget_gate.std():.4f}")
-            #     print(f"output_gate mean={output_gate.mean():.4f} std={output_gate.std():.4f}")
-            #     print(f"modulation  mean={modulation.mean():.4f} std={modulation.std():.4f}")
-            
-            # if i % 5 == 0:
-            #     print(f"[t={i}] input={input_gate.mean():.4f} forget={forget_gate.mean():.4f} output={output_gate.mean():.4f} mod={modulation.mean():.4f}")
-
+            # 
             # ==== CELL STATE ====
             cell_state = torch.tanh(input_gate * modulation + forget_gate * cell_state)
 
@@ -170,9 +162,9 @@ class GNN_LSTM(nn.Module):
     def mlp_classiffier(self, concat_embedding):
         x = F.relu(self.mlp_layer_1(concat_embedding))
         x = self.mlp_ln(x)
-        #x = self.mlp_dropout(x)
+        x = self.mlp_dropout(x)
         x = F.relu(self.mlp_layer_2(x))
-        #x = self.mlp_dropout(x)
+        x = self.mlp_dropout(x)
         x = self.mlp_layer_3(x)
         return x
 

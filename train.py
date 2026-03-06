@@ -129,16 +129,21 @@ def run_training(cfg: dict, run_name: str) -> float:
             optimizer.zero_grad()
             loss.backward()
 
-            # En train.py después de loss.backward(), antes de optimizer.step()
-            # for name, param in gnn_lstm.named_parameters():
-            #     if param.grad is not None:
-            #         print(f"{name}: grad_norm={param.grad.norm():.6f}")
-            #     else:
-            #         print(f"{name}: grad=None")
+            #En train.py después de loss.backward(), antes de optimizer.step()
+            for name, param in gnn_lstm.named_parameters():
+                if param.grad is not None:
+                    print(f"{name}: grad_norm={param.grad.norm():.6f}")
+                else:
+                    print(f"{name}: grad=None")
             
 
 
-            torch.nn.utils.clip_grad_norm_(gnn_lstm.parameters(), max_norm=cfg["max_grad_norm"])
+            
+            gnn_params  = [p for n, p in gnn_lstm.named_parameters() if 'gnn' in n]
+            rest_params = [p for n, p in gnn_lstm.named_parameters() if 'gnn' not in n]
+
+            torch.nn.utils.clip_grad_norm_(gnn_params,  max_norm=5.0)
+            torch.nn.utils.clip_grad_norm_(rest_params, max_norm=1.0)
             optimizer.step()
 
             total_loss  += loss.item()
@@ -212,8 +217,8 @@ if __name__ == "__main__":
     cfg = {
         "pool_ratio":          0.5,
         "hidden_channels":     128,
-        "lr":                  1e-2,
-        "weight_decay":        1e-3,
+        "lr":                  0.001,
+        "weight_decay":        0.05,
         "scheduler_step_size": 10,
         "scheduler_gamma":     0.4,
         "batch_size":          32,
