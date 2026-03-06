@@ -5,7 +5,7 @@ from memory_cleanup import cleanup_batch_simple
 
 
 def validate(model, idx_test, batch_size, epoch, X_tensors, y_tensor, X_lw_matrixes,
-             edge_index, val_hidden_starting_state, val_cell_starting_state, device, threshold):
+             val_hidden_starting_state, val_cell_starting_state, device, threshold):
 
     print(f"Validando para epoca: {epoch+1} ")
 
@@ -34,7 +34,6 @@ def validate(model, idx_test, batch_size, epoch, X_tensors, y_tensor, X_lw_matri
 
                 pred, pool_loss = model(
                     lw_matrixes_sequence=lw_matrixes_sequence,
-                    edge_index=edge_index,
                     hidden_state=val_hidden_starting_state.clone(),
                     cell_state=val_cell_starting_state.clone(),
                     time_series=time_series_batch[j]

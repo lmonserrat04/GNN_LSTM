@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GCNConv
+from utils import get_edge_indexes_sparse
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class DGPool(nn.Module):
@@ -76,20 +78,22 @@ class GNN_LSTM(nn.Module):
         self.mlp_layer_1 = nn.Linear(hidden_channels * 2, hidden_channels)
         self.mlp_layer_2 = nn.Linear(hidden_channels, hidden_channels // 2)
         self.mlp_layer_3 = nn.Linear(hidden_channels // 2, 1)
-        self.mlp_dropout = nn.Dropout(p=0.5)
+        #self.mlp_dropout = nn.Dropout(p=0.5)
         self.mlp_ln = nn.LayerNorm(hidden_channels)
 
     def gconv(self, gcn_layer, x, edge_index, edge_weight=None):
         """Aplica GCNConv + relu con edge weights opcionales."""
         return F.relu(gcn_layer(x, edge_index, edge_weight=edge_weight))
 
-    def forward(self, lw_matrixes_sequence, edge_index, hidden_state, cell_state, time_series):
+    def forward(self, lw_matrixes_sequence, hidden_state, cell_state, time_series):
 
         if torch.isnan(hidden_state).any() or torch.isnan(cell_state).any():
             print("⚠️ NaN detectado en hidden o cell")
 
-        for x in lw_matrixes_sequence:
-            edge_weight = torch.abs(x[edge_index[0], edge_index[1]])  # [E]
+        for i, x in enumerate(lw_matrixes_sequence):
+            edge_index = get_edge_indexes_sparse(x, threshold=0.5, device=device)
+            edge_weight = torch.abs(x[edge_index[0], edge_index[1]])
+            
 
             # ==== GATES ====
             input_gate = torch.sigmoid(
@@ -114,17 +118,19 @@ class GNN_LSTM(nn.Module):
 
             # ==== NEW HIDDEN STATE ====
             hidden_state = output_gate * torch.tanh(cell_state)
+        
+        #print(f"hidden FINAL mean={hidden_state.mean():.4f} std={hidden_state.std():.4f}")
 
         # ==== DG-Pooling ====
         pooled_graph, pool_loss = self.dg_pool(hidden_state)
         high_level_embeddings = pooled_graph.mean(dim=0)  # [k, F] → [F]
 
         # ==== LSTM raw fMRI ====
-        low_level_embeddings = self.lstm_raw_time_series(time_series)
+        low_level_embeddings = torch.zeros(self.hidden_channels,dtype=torch.float64, device = device)
 
         # ==== Fusión ====
         fusion = torch.cat([high_level_embeddings, low_level_embeddings], dim=0)
-        fusion = self.layer_norm(fusion.unsqueeze(0)).squeeze(0)
+        #fusion = self.layer_norm(fusion.unsqueeze(0)).squeeze(0)
 
         # ==== Clasificación ====
         pred = self.mlp_classiffier(fusion)
@@ -139,13 +145,13 @@ class GNN_LSTM(nn.Module):
     def mlp_classiffier(self, concat_embedding):
         x = F.relu(self.mlp_layer_1(concat_embedding))
         x = self.mlp_ln(x)
-        x = self.mlp_dropout(x)
+        #x = self.mlp_dropout(x)
         x = F.relu(self.mlp_layer_2(x))
-        x = self.mlp_dropout(x)
+        #x = self.mlp_dropout(x)
         x = self.mlp_layer_3(x)
         return x
 
-    def compute_loss(self, prediction_batch, label_batch, pool_losses_batch, lambda_pool=0.1):
+    def compute_loss(self, prediction_batch, label_batch, pool_losses_batch):
         loss_ce = F.binary_cross_entropy_with_logits(prediction_batch, label_batch)
         loss_pool = torch.mean(pool_losses_batch)
-        return loss_ce + lambda_pool * loss_pool
+        return loss_ce + loss_pool

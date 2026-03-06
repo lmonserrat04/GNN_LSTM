@@ -26,6 +26,8 @@ print("Cargando datos...")
 rois_time_series, rois_labels = load_rois_data(sites, df, Path(data_path))
 lw_matrixes_data              = torch.load(data_path / "lw_matrixes.pt", weights_only=False)
 
+
+
 X         = [ts for site in sites for ts in rois_time_series[site]]
 y         = np.concatenate([rois_labels[site] for site in sites])
 
@@ -34,7 +36,7 @@ X_tensors = [torch.tensor(ts, dtype=torch.float64) for ts in X_norm]
 y_tensor  = torch.tensor(y, dtype=torch.float64)
 
 idx_train, idx_test = train_test_split(np.arange(len(X)), test_size=0.2, stratify=y, random_state=42)
-edge_index = get_edge_indexes_fully_connected(num_nodes, device)
+#edge_index = get_edge_indexes_fully_connected(num_nodes, device)
 
 idx_train = idx_train[:8]
 idx_test = idx_test[:8]
@@ -105,7 +107,6 @@ def run_training(cfg: dict, run_name: str) -> float:
 
                 pred, pool_loss = gnn_lstm(
                     lw_matrixes_sequence=lw_seq,
-                    edge_index=edge_index,
                     hidden_state=h, cell_state=c,
                     time_series=ts,
                 )
@@ -165,7 +166,6 @@ def run_training(cfg: dict, run_name: str) -> float:
             X_tensors=X_tensors,
             y_tensor=y_tensor,
             X_lw_matrixes=lw_matrixes_data,
-            edge_index=edge_index,
             val_hidden_starting_state=val_h,
             val_cell_starting_state=val_c,
             device=device,
@@ -200,8 +200,8 @@ if __name__ == "__main__":
     cfg = {
         "pool_ratio":          0.5,
         "hidden_channels":     128,
-        "lr":                  5e-4,
-        "weight_decay":        0.05,
+        "lr":                  1e-2,
+        "weight_decay":        1e-3,
         "scheduler_step_size": 10,
         "scheduler_gamma":     0.4,
         "batch_size":          4,

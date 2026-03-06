@@ -30,6 +30,12 @@ def get_edge_indexes_fully_connected(num_nodes, device):
     edge_index = torch.cartesian_prod(idx, idx).t()
     return edge_index[:, edge_index[0] != edge_index[1]]
 
+def get_edge_indexes_sparse(dfc_matrix, threshold, device):
+    mask = torch.abs(dfc_matrix) > threshold
+    mask.fill_diagonal_(False)  # eliminar auto-conexiones
+    edge_index = mask.nonzero().t().to(device)
+    return edge_index
+
 
 class EarlyStopping:
     def __init__(self, patience, min_delta):
