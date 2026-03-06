@@ -204,10 +204,10 @@ if __name__ == "__main__":
         "weight_decay":        1e-3,
         "scheduler_step_size": 10,
         "scheduler_gamma":     0.4,
-        "batch_size":          4,
+        "batch_size":          32,
         "n_epochs":            150,
         "max_grad_norm":       1.0,
-        "patience":            150,
+        "patience":            35,
         "min_delta":           0.001,
     }
 
