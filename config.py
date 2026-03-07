@@ -1,6 +1,8 @@
 from pathlib import Path
 import pandas as pd
 import numpy as np
+import torch
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 pipeline = 'cpac'
 rois = 'rois_cc200'
@@ -16,7 +18,7 @@ sites      = df['SITE_ID'].unique()
 
 idxs_train = (sites != test_site)
 sites  = sites[idxs_train]
-#sites = ['SBL']
+sites = ['SBL']
 
 num_nodes = 200
 num_node_features = 200

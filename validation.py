@@ -1,4 +1,4 @@
-import torch
+from config import torch
 import torch.nn.functional as F
 
 from memory_cleanup import cleanup_batch_simple

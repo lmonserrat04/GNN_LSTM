@@ -1,8 +1,9 @@
-import torch
+from config import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GCNConv
-from utils import get_edge_indexes_sparse
+from jump_connection import jump_connection_parallel
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -60,13 +61,23 @@ class GNN_LSTM(nn.Module):
         self.output_gnn_hidden_state = GCNConv(hidden_channels, hidden_channels)
         self.modulation_gnn_hidden_state = GCNConv(hidden_channels, hidden_channels)
 
+        # Xavier initialization
         for gnn in [self.input_gnn, self.forget_gnn, self.output_gnn, self.modulation_gnn,
             self.input_gnn_hidden_state, self.forget_gnn_hidden_state,
             self.output_gnn_hidden_state, self.modulation_gnn_hidden_state]:
             nn.init.xavier_uniform_(gnn.lin.weight, gain=2.0)
 
-        self.layer_norm = nn.LayerNorm(hidden_channels * 2)
+        # ELIMINADO: self.combinate_skip = nn.Linear(hidden_channels*2, hidden_channels)
+        # NUEVO: mapping layers según ecuación 14 del paper
+        # p=1 → 1 layer para H_T
+        # p=2 → 2 layers para H_T y H_(T-1)
+        self.mapping_layers = nn.ModuleDict({
+            'p1_i0': nn.Linear(hidden_channels, hidden_channels, bias=False),
+            'p2_i0': nn.Linear(hidden_channels, hidden_channels, bias=False),
+            'p2_i1': nn.Linear(hidden_channels, hidden_channels, bias=False),
+        }).double()
 
+        # Layer norm modulation gate
         self.mod_norm = nn.LayerNorm(hidden_channels)
 
         # Dynamic Graph Pooling
@@ -97,54 +108,27 @@ class GNN_LSTM(nn.Module):
         return gcn_layer(x, edge_index, edge_weight=edge_weight)
 
     def forward(self, lw_matrixes_sequence, hidden_state, cell_state, time_series):
-
-        if torch.isnan(hidden_state).any() or torch.isnan(cell_state).any():
-            print("⚠️ NaN detectado en hidden o cell")
-
-        hidden_states = []
-        hidden_states.append(hidden_state) #Colocamos estado de t = 0
-
-        for i, x in enumerate(lw_matrixes_sequence):
-            
-            x = x.double()
-            edge_index = get_edge_indexes_sparse(x, threshold=0.5, device=device)
-            edge_weight = torch.abs(x[edge_index[0], edge_index[1]])
-            
-            if i>1:
-                hidden_state_skip_2 = hidden_states[i-1]
-            else:
-                hidden_state_skip_2 = hidden_states[0]
-                        
-
-            # ==== GATES ====
-            input_gate = torch.sigmoid(
-                self.gconv(self.input_gnn, x, edge_index, edge_weight) +
-                self.gconv(self.input_gnn_hidden_state, hidden_state_skip_2, edge_index, edge_weight)
-            )
-            forget_gate = torch.sigmoid(
-                self.gconv(self.forget_gnn, x, edge_index, edge_weight) +
-                self.gconv(self.forget_gnn_hidden_state, hidden_state_skip_2, edge_index, edge_weight)
-            )
-            output_gate = torch.sigmoid(
-                self.gconv(self.output_gnn, x, edge_index, edge_weight) +
-                self.gconv(self.output_gnn_hidden_state, hidden_state_skip_2, edge_index, edge_weight)
-            )
-            mod_raw = (
-                self.gconv_linear(self.modulation_gnn, x, edge_index, edge_weight) +
-                self.gconv_linear(self.modulation_gnn_hidden_state, hidden_state_skip_2, edge_index, edge_weight)
-            )
-            modulation = torch.relu(self.mod_norm(mod_raw))
-
-            # 
-            # ==== CELL STATE ====
-            cell_state = torch.tanh(input_gate * modulation + forget_gate * cell_state)
-
-            # ==== NEW HIDDEN STATE ====
-            hidden_state = output_gate * torch.tanh(cell_state)
-            
-            hidden_states.append(hidden_state)
         
-        #print(f"hidden FINAL mean={hidden_state.mean():.4f} std={hidden_state.std():.4f}")
+        # NUEVO: jump_connection_parallel devuelve lista de listas de tensors
+        # [[h_T], [h_T, h_(T-1)]] para p=1 y p=2
+        hidden_states_last_by_p = jump_connection_parallel(
+            self, [1, 2], lw_matrixes_sequence, hidden_state, cell_state
+        )
+
+        # ELIMINADO: hidden_state_cat = torch.cat(hidden_states_last_by_p, dim=-1)
+        # ELIMINADO: hidden_state = self.combinate_skip(hidden_state_cat)
+
+        # NUEVO: ecuación 14 del paper — suma ponderada con mapping layers
+        output = torch.zeros(
+            hidden_state.shape[0], self.hidden_channels, dtype=torch.float64
+        ).to(hidden_state.device)
+
+        for p_idx, p in enumerate([1, 2]):
+            last_states = hidden_states_last_by_p[p_idx]  # lista de p tensors
+            for i, h in enumerate(last_states):
+                output = output + self.mapping_layers[f'p{p_idx+1}_i{i}'](h)
+
+        hidden_state = output
 
         # ==== DG-Pooling ====
         pooled_graph, pool_loss = self.dg_pool(hidden_state)
@@ -153,10 +137,8 @@ class GNN_LSTM(nn.Module):
         # ==== LSTM raw fMRI ====
         low_level_embeddings = self.lstm_raw_time_series(time_series)
 
-
         # ==== Fusión ====
         fusion = torch.cat([high_level_embeddings, low_level_embeddings], dim=0)
-        #fusion = self.layer_norm(fusion.unsqueeze(0)).squeeze(0)
 
         # ==== Clasificación ====
         pred = self.mlp_classiffier(fusion)
@@ -177,7 +159,7 @@ class GNN_LSTM(nn.Module):
         x = self.mlp_layer_3(x)
         return x
 
-    def compute_loss(self, prediction_batch, label_batch, pool_losses_batch, lambda_pool = 0.01):
+    def compute_loss(self, prediction_batch, label_batch, pool_losses_batch, lambda_pool=0.01):
         loss_ce = F.binary_cross_entropy_with_logits(prediction_batch, label_batch)
         loss_pool = torch.mean(pool_losses_batch)
         return loss_ce + lambda_pool * loss_pool

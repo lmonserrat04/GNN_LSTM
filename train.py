@@ -1,21 +1,19 @@
 import numpy as np
 from pathlib import Path
-import torch
+from config import torch
 import time
 from sklearn.model_selection import train_test_split
 from torch.optim.lr_scheduler import StepLR
-
+from config import device
 from memory_cleanup import cleanup_batch_simple
 from config import data_path, num_nodes, num_node_features, sites, df
 from data_loader import load_rois_data
 from model import GNN_LSTM
 from checkpoint import save_checkpoint, load_checkpoint
-from utils import set_seed, create_starting_hidden_state_graph, create_starting_cell_state, get_edge_indexes_fully_connected, EarlyStopping, z_score_norm
+from utils import set_seed, create_starting_hidden_state_graph, create_starting_cell_state, EarlyStopping, z_score_norm
 from validation import validate
 
-print("Torch version:", torch.__version__)
-print("CUDA available:", torch.cuda.is_available())
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 print("Usando device:", device)
 
 set_seed()
@@ -24,7 +22,7 @@ set_seed()
 print("Cargando datos...")
 
 rois_time_series, rois_labels = load_rois_data(sites, df, Path(data_path))
-lw_matrixes_data              = torch.load(data_path / "lw_matrixes.pt", weights_only=False)
+lw_matrixes_data              = torch.load(data_path / "lw_matrixes_reduced.pt", weights_only=False)
 
 
 
@@ -38,8 +36,8 @@ y_tensor  = torch.tensor(y, dtype=torch.float64)
 idx_train, idx_test = train_test_split(np.arange(len(X)), test_size=0.2, stratify=y, random_state=42)
 #edge_index = get_edge_indexes_fully_connected(num_nodes, device)
 
-#idx_train = idx_train[:8]
-#idx_test = idx_test[:8]
+idx_train = idx_train[:8]
+idx_test = idx_test[:8]
 
 
 torch.set_printoptions(threshold=torch.inf)
