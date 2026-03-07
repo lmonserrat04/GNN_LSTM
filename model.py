@@ -101,30 +101,37 @@ class GNN_LSTM(nn.Module):
         if torch.isnan(hidden_state).any() or torch.isnan(cell_state).any():
             print("⚠️ NaN detectado en hidden o cell")
 
+        hidden_states = []
+        hidden_states.append(hidden_state) #Colocamos estado de t = 0
+
         for i, x in enumerate(lw_matrixes_sequence):
             
             x = x.double()
             edge_index = get_edge_indexes_sparse(x, threshold=0.5, device=device)
             edge_weight = torch.abs(x[edge_index[0], edge_index[1]])
             
+            if i>1:
+                hidden_state_skip_2 = hidden_states[i-1]
+            else:
+                hidden_state_skip_2 = hidden_states[0]
                         
 
             # ==== GATES ====
             input_gate = torch.sigmoid(
                 self.gconv(self.input_gnn, x, edge_index, edge_weight) +
-                self.gconv(self.input_gnn_hidden_state, hidden_state, edge_index, edge_weight)
+                self.gconv(self.input_gnn_hidden_state, hidden_state_skip_2, edge_index, edge_weight)
             )
             forget_gate = torch.sigmoid(
                 self.gconv(self.forget_gnn, x, edge_index, edge_weight) +
-                self.gconv(self.forget_gnn_hidden_state, hidden_state, edge_index, edge_weight)
+                self.gconv(self.forget_gnn_hidden_state, hidden_state_skip_2, edge_index, edge_weight)
             )
             output_gate = torch.sigmoid(
                 self.gconv(self.output_gnn, x, edge_index, edge_weight) +
-                self.gconv(self.output_gnn_hidden_state, hidden_state, edge_index, edge_weight)
+                self.gconv(self.output_gnn_hidden_state, hidden_state_skip_2, edge_index, edge_weight)
             )
             mod_raw = (
                 self.gconv_linear(self.modulation_gnn, x, edge_index, edge_weight) +
-                self.gconv_linear(self.modulation_gnn_hidden_state, hidden_state, edge_index, edge_weight)
+                self.gconv_linear(self.modulation_gnn_hidden_state, hidden_state_skip_2, edge_index, edge_weight)
             )
             modulation = torch.relu(self.mod_norm(mod_raw))
 
@@ -134,6 +141,8 @@ class GNN_LSTM(nn.Module):
 
             # ==== NEW HIDDEN STATE ====
             hidden_state = output_gate * torch.tanh(cell_state)
+            
+            hidden_states.append(hidden_state)
         
         #print(f"hidden FINAL mean={hidden_state.mean():.4f} std={hidden_state.std():.4f}")
 

@@ -40,6 +40,10 @@ def validate(model, idx_test, batch_size, epoch, X_tensors, y_tensor, X_lw_matri
                 )
 
                 pred = pred.view(-1)
+                pred_prob = torch.sigmoid(pred)
+                print(f"pred_prob={pred_prob.item():.4f} | label={y_tensor[idx].item()}")
+
+                
                 preds_batch.append(pred)
                 pool_losses_batch.append(pool_loss)
 
