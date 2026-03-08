@@ -28,8 +28,7 @@ def validate(model, idx_test, batch_size, epoch, X_tensors, y_tensor, X_lw_matri
             h = create_starting_hidden_state_graph(num_nodes, actual_batch_size, model.hidden_channels).to(device)
             c = create_starting_cell_state(num_nodes, actual_batch_size, model.hidden_channels).to(device)
 
-            # BUG CORREGIDO: antes llamaba model 1 a 1 en loop con edge_index hardcodeado
-            # Ahora usa forward batched igual que train
+            
             preds, pool_loss = model(
                 lw_matrixes_sequence=lw_matrixes_sequence_batch,
                 hidden_state_batch=h,
@@ -38,8 +37,14 @@ def validate(model, idx_test, batch_size, epoch, X_tensors, y_tensor, X_lw_matri
             )
 
             
-            print(f"pred_prob={torch.sigmoid(preds):.4f} | label={labels_batch}")
+            probs = torch.sigmoid(preds)
+            for prob, label in zip(probs.tolist(), labels_batch.tolist()):
+                pred_class = "ASD" if prob >= 0.5 else "TC "
+                true_class = "ASD" if label == 1.0 else "TC "
+                correct    = "✅" if pred_class.strip() == true_class.strip() else "❌"
+                print(f"  {correct} pred={pred_class} ({prob:.3f}) | true={true_class}")
 
+            
             # BUG CORREGIDO: compute_loss ya recibe pool_loss scalar directamente
             loss = model.compute_loss(preds, labels_batch, pool_loss)
 

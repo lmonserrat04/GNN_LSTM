@@ -110,6 +110,13 @@ def run_training(cfg: dict, run_name: str) -> float:
             optimizer.zero_grad()
             loss.backward()
 
+            #Inspeccionar gradientes
+            # for name, param in gnn_lstm.named_parameters():
+            #     if param.grad is not None:
+            #         print(f"{name}: grad_norm={param.grad.norm():.6f}")
+            #     else:
+            #         print(f"{name}: grad=None")
+
             gnn_params  = [p for n, p in gnn_lstm.named_parameters() if 'gnn' in n]
             rest_params = [p for n, p in gnn_lstm.named_parameters() if 'gnn' not in n]
             torch.nn.utils.clip_grad_norm_(gnn_params,  max_norm=5.0)

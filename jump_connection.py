@@ -9,9 +9,19 @@ def jump_connection_parallel(model, p_s, lw_matrixes_sequence_batch: list, hidde
     if torch.isnan(hidden_state_input_batch).any() or torch.isnan(cell_state_batch).any():
         print("⚠️ NaN detectado en hidden o cell")
 
-    # num_nodes por individuo — se infiere del primer individuo, primer timestep
     num_nodes  = lw_matrixes_sequence_batch[0][0].shape[0]
     batch_size = len(lw_matrixes_sequence_batch)
+
+    # Padeo — igualar longitud de todos los individuos al máximo del batch
+    max_timesteps = max(len(seq) for seq in lw_matrixes_sequence_batch)
+    lw_padded = []
+    for seq in lw_matrixes_sequence_batch:
+        if len(seq) < max_timesteps:
+            # Repetir último timestep hasta llegar a max_timesteps
+            padding = [seq[-1]] * (max_timesteps - len(seq))
+            lw_padded.append(seq + padding)
+        else:
+            lw_padded.append(seq)
 
     hidden_states_last_by_p = []
 
@@ -20,7 +30,7 @@ def jump_connection_parallel(model, p_s, lw_matrixes_sequence_batch: list, hidde
         cell_state_p  = cell_state_batch.clone()
         hidden_states.append(hidden_state_input_batch)
 
-        for i in range(len(lw_matrixes_sequence_batch[0])):
+        for i in range(max_timesteps):
 
             if i > p - 1:
                 hidden_state_skip_p = hidden_states[i-(p-1)]
@@ -31,9 +41,7 @@ def jump_connection_parallel(model, p_s, lw_matrixes_sequence_batch: list, hidde
             data_hidden_state_list = []
 
             for j in range(batch_size):
-                # BUG CORREGIDO: era lw_matrixes_sequence_batch[i][j]
-                # estructura es [individuo][timestep] → debe ser [j][i]
-                x_for_individual = lw_matrixes_sequence_batch[j][i].double()
+                x_for_individual = lw_padded[j][i].double()
 
                 edge_index_ind  = get_edge_indexes_sparse(x_for_individual, threshold=0.5, device=device)
                 edge_weight_ind = torch.abs(x_for_individual[edge_index_ind[0], edge_index_ind[1]])
@@ -44,8 +52,6 @@ def jump_connection_parallel(model, p_s, lw_matrixes_sequence_batch: list, hidde
                     edge_attr  = edge_weight_ind
                 ))
 
-                # BUG CORREGIDO: era hidden_state_skip_p completo [N*batch, F]
-                # hay que extraer el slice del individuo j: [j*N : (j+1)*N]
                 hs_individual = hidden_state_skip_p[j * num_nodes:(j + 1) * num_nodes]
 
                 data_hidden_state_list.append(Data(

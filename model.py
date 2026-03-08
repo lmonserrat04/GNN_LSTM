@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GCNConv
 from jump_connection import jump_connection_parallel
+from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence, pad_packed_sequence
+
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -154,10 +156,16 @@ class GNN_LSTM(nn.Module):
         return preds, pool_loss
 
     def lstm_raw_time_series(self, time_series_batch):
-        # BUG CORREGIDO: antes recibía un tensor individual [T, N]
-        # Ahora recibe lista de tensors y apila en [T, batch, N]
-        stacked = torch.stack(time_series_batch, dim=1)  # [T, batch, N]
-        _, (h_last, _) = self.lstm_raw_fmri(stacked)
+        # Obtener longitudes reales de cada serie
+        lengths = torch.tensor([ts.shape[0] for ts in time_series_batch], dtype=torch.long)
+
+        # Padear al máximo del batch → [T_max, batch, N]
+        padded = pad_sequence(time_series_batch, batch_first=False, padding_value=0.0)
+
+        # Empaquetar para que el LSTM ignore el padding
+        packed = pack_padded_sequence(padded, lengths.cpu(), batch_first=False, enforce_sorted=False)
+
+        _, (h_last, _) = self.lstm_raw_fmri(packed)
         return h_last[-1]  # [batch, hidden]
 
     def mlp_classiffier(self, concat_embedding):

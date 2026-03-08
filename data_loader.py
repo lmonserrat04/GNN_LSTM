@@ -14,7 +14,7 @@ def load_rois_data(sites, df, origin_path):
     total_of_subjects = 0
 
     for site in sites:
-        print(f"   ↳ Procesando sitio: {site}")
+        #print(f"   ↳ Procesando sitio: {site}")
         site_time_series = []  # List to store time series for each subject at the site
         site_labels = []  # List to store labels for each subject at the site
 
@@ -64,7 +64,7 @@ def load_rois_data(sites, df, origin_path):
         rois_labels[site] = np.array(site_labels)
         loaded_subjects_from_site = len(site_time_series)
         total_of_subjects+= loaded_subjects_from_site
-        print(f"   ✅ Loaded {loaded_subjects_from_site} subjects from site {site}.")
+        #print(f"   ✅ Loaded {loaded_subjects_from_site} subjects from site {site}.")
 
     print(f"✅ Total loaded: {total_of_subjects} subjects")
     print("   ↳ Fin de load_rois_data")
