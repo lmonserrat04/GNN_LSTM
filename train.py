@@ -38,8 +38,8 @@ y_tensor  = torch.tensor(y, dtype=torch.float64)
 idx_train, idx_test = train_test_split(np.arange(len(X)), test_size=0.2, stratify=y, random_state=42)
 
 # BUG CORREGIDO: límites de debug eliminados — usar dataset completo
-idx_train = idx_train[:8]
-idx_test = idx_test[:8]
+#idx_train = idx_train[:8]
+#idx_test = idx_test[:8]
 
 torch.set_printoptions(threshold=torch.inf)
 
@@ -90,6 +90,7 @@ def run_training(cfg: dict, run_name: str) -> float:
         for i in range(last_batch_index * batch_size, len(idxs), batch_size):
             idxs_batch = idxs[i:i+batch_size]
             actual_batch_size = len(idxs_batch)
+            
 
             time_series_batch          = [X_tensors[idx].detach().clone().to(device) for idx in idxs_batch]
             lw_matrixes_sequence_batch = [[m.to(device) for m in lw_matrixes_data[idx]] for idx in idxs_batch]
