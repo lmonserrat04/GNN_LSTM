@@ -118,6 +118,37 @@ def run_training(cfg: dict, run_name: str) -> float:
             optimizer.zero_grad()
             loss.backward()
 
+            if epoch == 0 and batch_count == 0:
+                print("\n==== DIAGNÓSTICO GRADIENTES ====")
+                gnn_norms = []
+                mlp_norms = []
+                for name, param in gnn_lstm.named_parameters():
+                    if param.grad is not None:
+                        norm = param.grad.norm().item()
+                        if 'gnn' in name:
+                            gnn_norms.append((name, norm))
+                        else:
+                            mlp_norms.append((name, norm))
+
+                print("── GNN ──")
+                for name, norm in gnn_norms:
+                    bar = '█' * min(int(norm * 200), 30)
+                    print(f"  {name:<45} {norm:.6f}  {bar}")
+
+                print("── LSTM + MLP ──")
+                for name, norm in mlp_norms:
+                    bar = '█' * min(int(norm * 200), 30)
+                    print(f"  {name:<45} {norm:.6f}  {bar}")
+
+                gnn_mean = sum(n for _, n in gnn_norms) / len(gnn_norms) if gnn_norms else 0
+                mlp_mean = sum(n for _, n in mlp_norms) / len(mlp_norms) if mlp_norms else 0
+                ratio    = mlp_mean / gnn_mean if gnn_mean > 0 else float('inf')
+                print(f"\n  GNN grad medio:     {gnn_mean:.6f}")
+                print(f"  LSTM+MLP grad medio:{mlp_mean:.6f}")
+                print(f"  Ratio MLP/GNN:      {ratio:.1f}x  ← objetivo: < 10x")
+                print("================================\n")
+
+
             #Inspeccionar gradientes
             # for name, param in gnn_lstm.named_parameters():
             #     if param.grad is not None:
