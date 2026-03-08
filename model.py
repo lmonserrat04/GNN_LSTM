@@ -8,36 +8,48 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class DGPool(nn.Module):
-    def __init__(self, input_dim, pool_ratio):
+    def __init__(self, input_dim, pool_ratio, num_nodes):
         print("   ↳ Inicializando DGPool...")
         super(DGPool, self).__init__()
         self.pool_ratio = pool_ratio
+        # BUG CORREGIDO: antes no se guardaba num_nodes, necesario para reshape del batch
+        self.num_nodes = num_nodes
         self.trainable_vector_pooling = nn.Parameter(torch.randn(input_dim, 1))
 
-    def forward(self, lw_matrix_hidden_state_last):
-        x = lw_matrix_hidden_state_last  # [N, F]
-        num_nodes = x.size(0)
-        k = max(1, int(num_nodes * self.pool_ratio))
+    def forward(self, x_batch):
+        # BUG CORREGIDO: antes trataba [N*batch, F] como un único grafo gigante
+        # Ahora procesa cada individuo por separado → devuelve [batch, F] + pool_loss scalar
+        batch_size = x_batch.shape[0] // self.num_nodes
+        x = x_batch.view(batch_size, self.num_nodes, -1)  # [batch, N, F]
 
+        k = max(1, int(self.num_nodes * self.pool_ratio))
         norm2 = torch.norm(self.trainable_vector_pooling)
-        scores = x @ (self.trainable_vector_pooling / (norm2 + 1e-8))  # [N,1]
-        scores = (scores - scores.mean()) / (scores.std(unbiased=False) + 1e-8)
-        sig_scores = torch.sigmoid(scores)  # [N,1]
-        x_scaled = x * sig_scores
+        w = self.trainable_vector_pooling / (norm2 + 1e-8)  # [F, 1]
 
-        _, indices = torch.topk(sig_scores.squeeze(), k=k)
-        new_x = x_scaled[indices]
+        pooled_list = []
+        pool_loss_list = []
 
-        sig_scores_sorted, _ = torch.sort(sig_scores.squeeze(), descending=True)
-        topk_scores = sig_scores_sorted[:k]
-        rest_scores = sig_scores_sorted[k:]
-        eps = 1e-8
-        pool_loss = -(
-            torch.log(topk_scores + eps).sum() +
-            torch.log(1.0 - rest_scores + eps).sum()
-        ) / num_nodes
+        for b in range(batch_size):
+            x_b = x[b]  # [N, F]
+            scores = x_b @ w  # [N, 1]
+            scores = (scores - scores.mean()) / (scores.std(unbiased=False) + 1e-8)
+            sig_scores = torch.sigmoid(scores)
+            x_scaled = x_b * sig_scores
 
-        return new_x, pool_loss
+            _, indices = torch.topk(sig_scores.squeeze(), k=k)
+            new_x = x_scaled[indices]  # [k, F]
+            pooled_list.append(new_x.mean(dim=0))  # [F]
+
+            sig_sorted, _ = torch.sort(sig_scores.squeeze(), descending=True)
+            topk = sig_sorted[:k]
+            rest = sig_sorted[k:]
+            eps = 1e-8
+            loss_b = -(torch.log(topk + eps).sum() + torch.log(1.0 - rest + eps).sum()) / self.num_nodes
+            pool_loss_list.append(loss_b)
+
+        pooled = torch.stack(pooled_list)               # [batch, F]
+        pool_loss = torch.stack(pool_loss_list).mean()  # scalar
+        return pooled, pool_loss
 
 
 class GNN_LSTM(nn.Module):
@@ -48,6 +60,7 @@ class GNN_LSTM(nn.Module):
         self.pool_ratio = pool_ratio
         self.hidden_channels = hidden_channels
         self.node_feat_dim = num_node_features
+        self.num_nodes = num_nodes
 
         # GCNConv para la entrada (G_t)
         self.input_gnn = GCNConv(num_node_features, hidden_channels)
@@ -63,14 +76,11 @@ class GNN_LSTM(nn.Module):
 
         # Xavier initialization
         for gnn in [self.input_gnn, self.forget_gnn, self.output_gnn, self.modulation_gnn,
-            self.input_gnn_hidden_state, self.forget_gnn_hidden_state,
-            self.output_gnn_hidden_state, self.modulation_gnn_hidden_state]:
+                    self.input_gnn_hidden_state, self.forget_gnn_hidden_state,
+                    self.output_gnn_hidden_state, self.modulation_gnn_hidden_state]:
             nn.init.xavier_uniform_(gnn.lin.weight, gain=2.0)
 
-        # ELIMINADO: self.combinate_skip = nn.Linear(hidden_channels*2, hidden_channels)
-        # NUEVO: mapping layers según ecuación 14 del paper
-        # p=1 → 1 layer para H_T
-        # p=2 → 2 layers para H_T y H_(T-1)
+        # Mapping layers ecuación 14 del paper
         self.mapping_layers = nn.ModuleDict({
             'p1_i0': nn.Linear(hidden_channels, hidden_channels, bias=False),
             'p2_i0': nn.Linear(hidden_channels, hidden_channels, bias=False),
@@ -80,9 +90,8 @@ class GNN_LSTM(nn.Module):
         # Layer norm modulation gate
         self.mod_norm = nn.LayerNorm(hidden_channels)
 
-        # Dynamic Graph Pooling
-        self.k = max(1, int(num_nodes * pool_ratio))
-        self.dg_pool = DGPool(hidden_channels, pool_ratio)
+        # BUG CORREGIDO: antes se instanciaba sin num_nodes
+        self.dg_pool = DGPool(hidden_channels, pool_ratio, num_nodes)
 
         # LSTM para procesar datos raw
         self.lstm_raw_fmri = nn.LSTM(
@@ -92,74 +101,77 @@ class GNN_LSTM(nn.Module):
             batch_first=False
         )
 
-        # MLP Clasificacion final — 3 capas: hidden*2 → hidden → hidden//2 → 1
+        # MLP Clasificacion final
         self.mlp_layer_1 = nn.Linear(hidden_channels * 2, hidden_channels)
         self.mlp_layer_2 = nn.Linear(hidden_channels, hidden_channels // 2)
         self.mlp_layer_3 = nn.Linear(hidden_channels // 2, 1)
         self.mlp_dropout = nn.Dropout(p=0.5)
         self.mlp_ln = nn.LayerNorm(hidden_channels)
 
-    def gconv(self, gcn_layer, x, edge_index, edge_weight=None):
-        """GCNConv con relu — para input, forget, output gates."""
-        return F.relu(gcn_layer(x, edge_index, edge_weight=edge_weight))
+    def gconv(self, gcn_layer, batch):
+        # BUG CORREGIDO: antes hacía gcn_layer(x) con objeto Batch directamente
+        # GCNConv necesita (x, edge_index, edge_weight)
+        return F.relu(gcn_layer(batch.x, batch.edge_index, edge_weight=batch.edge_attr))
 
-    def gconv_linear(self, gcn_layer, x, edge_index, edge_weight=None):
-        """GCNConv sin activación — para modulation, activación se aplica fuera."""
-        return gcn_layer(x, edge_index, edge_weight=edge_weight)
+    def gconv_linear(self, gcn_layer, batch):
+        # BUG CORREGIDO: mismo problema que gconv
+        return gcn_layer(batch.x, batch.edge_index, edge_weight=batch.edge_attr)
 
-    def forward(self, lw_matrixes_sequence, hidden_state, cell_state, time_series):
-        
-        # NUEVO: jump_connection_parallel devuelve lista de listas de tensors
-        # [[h_T], [h_T, h_(T-1)]] para p=1 y p=2
+    def forward(self, lw_matrixes_sequence, hidden_state_batch, cell_state_batch, time_series_batch):
+
         hidden_states_last_by_p = jump_connection_parallel(
-            self, [1, 2], lw_matrixes_sequence, hidden_state, cell_state
+            self, [1, 2], lw_matrixes_sequence, hidden_state_batch, cell_state_batch
         )
 
-        # ELIMINADO: hidden_state_cat = torch.cat(hidden_states_last_by_p, dim=-1)
-        # ELIMINADO: hidden_state = self.combinate_skip(hidden_state_cat)
-
-        # NUEVO: ecuación 14 del paper — suma ponderada con mapping layers
+        # Ecuación 14 — suma ponderada con mapping layers
         output = torch.zeros(
-            hidden_state.shape[0], self.hidden_channels, dtype=torch.float64
-        ).to(hidden_state.device)
+            hidden_state_batch.shape[0], self.hidden_channels, dtype=torch.float64
+        ).to(hidden_state_batch.device)
 
         for p_idx, p in enumerate([1, 2]):
-            last_states = hidden_states_last_by_p[p_idx]  # lista de p tensors
+            last_states = hidden_states_last_by_p[p_idx]
             for i, h in enumerate(last_states):
                 output = output + self.mapping_layers[f'p{p_idx+1}_i{i}'](h)
 
-        hidden_state = output
-
-        # ==== DG-Pooling ====
-        pooled_graph, pool_loss = self.dg_pool(hidden_state)
-        high_level_embeddings = pooled_graph.mean(dim=0)  # [k, F] → [F]
+        # ==== DG-Pooling batched ====
+        # BUG CORREGIDO: antes mean(dim=0) colapsaba todo el batch en un solo vector
+        # Ahora DGPool devuelve [batch, F] y pool_loss scalar
+        high_level_embeddings, pool_loss = self.dg_pool(output)  # [batch, F]
 
         # ==== LSTM raw fMRI ====
-        low_level_embeddings = self.lstm_raw_time_series(time_series)
+        # BUG CORREGIDO: antes recibía tensor individual, ahora recibe lista
+        low_level_embeddings = self.lstm_raw_time_series(time_series_batch)  # [batch, F]
 
-        # ==== Fusión ====
-        fusion = torch.cat([high_level_embeddings, low_level_embeddings], dim=0)
+        # ==== Fusión por individuo ====
+        # BUG CORREGIDO: antes cat(..., dim=0) para un solo individuo
+        # Ahora dim=1 porque ambos son [batch, F]
+        fusion = torch.cat([high_level_embeddings, low_level_embeddings], dim=1)  # [batch, F*2]
 
         # ==== Clasificación ====
-        pred = self.mlp_classiffier(fusion)
+        preds = self.mlp_classiffier(fusion)  # [batch, 1]
+        preds = preds.view(-1)                # [batch]
 
-        return pred, pool_loss
+        return preds, pool_loss
 
-    def lstm_raw_time_series(self, time_series_data):
-        _, (h_last, _) = self.lstm_raw_fmri(time_series_data)
-        h_last = h_last[-1].squeeze(0)
-        return h_last
+    def lstm_raw_time_series(self, time_series_batch):
+        # BUG CORREGIDO: antes recibía un tensor individual [T, N]
+        # Ahora recibe lista de tensors y apila en [T, batch, N]
+        stacked = torch.stack(time_series_batch, dim=1)  # [T, batch, N]
+        _, (h_last, _) = self.lstm_raw_fmri(stacked)
+        return h_last[-1]  # [batch, hidden]
 
     def mlp_classiffier(self, concat_embedding):
+        # concat_embedding: [batch, hidden*2] — nn.Linear maneja batch automáticamente
         x = F.relu(self.mlp_layer_1(concat_embedding))
         x = self.mlp_ln(x)
         x = self.mlp_dropout(x)
         x = F.relu(self.mlp_layer_2(x))
         x = self.mlp_dropout(x)
         x = self.mlp_layer_3(x)
-        return x
+        return x  # [batch, 1]
 
-    def compute_loss(self, prediction_batch, label_batch, pool_losses_batch, lambda_pool=0.01):
+    def compute_loss(self, prediction_batch, label_batch, pool_loss, lambda_pool=0.01):
+        # BUG CORREGIDO: antes recibía pool_losses_batch tensor y hacía mean
+        # Ahora pool_loss ya es scalar directo de DGPool batched
         loss_ce = F.binary_cross_entropy_with_logits(prediction_batch, label_batch)
-        loss_pool = torch.mean(pool_losses_batch)
-        return loss_ce + lambda_pool * loss_pool
+        return loss_ce + lambda_pool * pool_loss

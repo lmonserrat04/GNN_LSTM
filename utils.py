@@ -17,12 +17,12 @@ def z_score_norm(x):
     return (x - mean) / std
 
 
-def create_starting_hidden_state_graph(num_nodes: int, hidden_channels: int):
-    return torch.zeros((num_nodes, hidden_channels), dtype=torch.float64)
+def create_starting_hidden_state_graph(num_nodes: int,batch_size:int, hidden_channels: int):
+    return torch.zeros((num_nodes * batch_size, hidden_channels), dtype=torch.float64)
 
 
-def create_starting_cell_state(num_nodes: int, hidden_channels: int):
-    return torch.zeros((num_nodes, hidden_channels), dtype=torch.float64)
+def create_starting_cell_state(num_nodes: int,batch_size:int, hidden_channels: int):
+    return torch.zeros((num_nodes * batch_size, hidden_channels), dtype=torch.float64)
 
 
 def get_edge_indexes_fully_connected(num_nodes, device):
