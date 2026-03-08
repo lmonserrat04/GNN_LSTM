@@ -21,7 +21,7 @@ set_seed()
 print("Cargando datos...")
 
 rois_time_series, rois_labels = load_rois_data(sites, df, Path(data_path))
-lw_matrixes_data              = torch.load(data_path / "lw_matrixes_reduced.pt", weights_only=False)
+lw_matrixes_data              = torch.load(data_path / "lw_matrixes.pt", weights_only=False)
 
 X         = [ts for site in sites for ts in rois_time_series[site]]
 y         = np.concatenate([rois_labels[site] for site in sites])
@@ -33,8 +33,8 @@ y_tensor  = torch.tensor(y, dtype=torch.float64)
 idx_train, idx_test = train_test_split(np.arange(len(X)), test_size=0.2, stratify=y, random_state=42)
 
 # BUG CORREGIDO: límites de debug eliminados — usar dataset completo
-idx_train = idx_train[:8]
-idx_test = idx_test[:8]
+# idx_train = idx_train[:8]
+# idx_test = idx_test[:8]
 
 torch.set_printoptions(threshold=torch.inf)
 
