@@ -37,12 +37,12 @@ def validate(model, idx_test, batch_size, epoch, X_tensors, y_tensor, X_lw_matri
             )
 
             
-            probs = torch.sigmoid(preds)
-            for prob, label in zip(probs.tolist(), labels_batch.tolist()):
-                pred_class = "ASD" if prob >= 0.5 else "TC "
-                true_class = "ASD" if label == 1.0 else "TC "
-                correct    = "✅" if pred_class.strip() == true_class.strip() else "❌"
-                print(f"  {correct} pred={pred_class} ({prob:.3f}) | true={true_class}")
+            # probs = torch.sigmoid(preds)
+            # for prob, label in zip(probs.tolist(), labels_batch.tolist()):
+            #     pred_class = "ASD" if prob >= 0.5 else "TC "
+            #     true_class = "ASD" if label == 1.0 else "TC "
+            #     correct    = "✅" if pred_class.strip() == true_class.strip() else "❌"
+            #     print(f"  {correct} pred={pred_class} ({prob:.3f}) | true={true_class}")
 
             
             # BUG CORREGIDO: compute_loss ya recibe pool_loss scalar directamente

@@ -76,6 +76,9 @@ class GNN_LSTM(nn.Module):
         self.output_gnn_hidden_state = GCNConv(hidden_channels, hidden_channels)
         self.modulation_gnn_hidden_state = GCNConv(hidden_channels, hidden_channels)
 
+        # Dropout gnn
+        #self.gnn_dropout = nn.Dropout(p=0.3)
+
         # Xavier initialization
         for gnn in [self.input_gnn, self.forget_gnn, self.output_gnn, self.modulation_gnn,
                     self.input_gnn_hidden_state, self.forget_gnn_hidden_state,

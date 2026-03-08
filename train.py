@@ -188,7 +188,7 @@ def run_training(cfg: dict, run_name: str) -> float:
 if __name__ == "__main__":
     cfg = {
         "pool_ratio":          0.5,
-        "hidden_channels":     128,
+        "hidden_channels":     64,
         "lr":                  0.001,
         "weight_decay":        0.05,
         "scheduler_step_size": 10,
