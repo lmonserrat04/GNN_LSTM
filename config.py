@@ -18,9 +18,9 @@ sites      = df['SITE_ID'].unique()
 
 idxs_train = (sites != test_site)
 sites  = sites[idxs_train]
-#sites = ['SBL']
+sites = ['SBL']
 
 num_nodes = 200
-num_node_features = 200
+num_node_features = 40
 print(sites)
 

@@ -21,24 +21,41 @@ python create_matrixes.py --modo test
 
 # Todos → guarda lw_matrixes_all.pt
 python create_matrixes.py --modo all
+
+#Dummy dataset
+python create_matrixes.py --modo dummy
 """
 
 
-def create_dfc_matrix(time_fmri_series, window_size=40, step=10):
-    subject_data = np.array(time_fmri_series, dtype=np.float32) if not isinstance(time_fmri_series, np.ndarray) else time_fmri_series.astype(np.float32)
-    subject_data = z_score_norm(subject_data)
+def create_dfc_matrix(time_fmri_series: np.ndarray, window_size=40, step=10):
+    subject_data: np.ndarray = np.array(time_fmri_series, dtype=np.float32) if not isinstance(time_fmri_series, np.ndarray) else time_fmri_series.astype(np.float32)
+    subject_data: np.ndarray = z_score_norm(subject_data)
     n_time       = subject_data.shape[0]
-    matrixes     = []
+
+    lw_matrixes_for_sub     = []
+    nodal_features_for_sub = []
 
     for position in range(0, n_time - window_size + 1, step):
+        #Hacer ventana
         X     = subject_data[position:position + window_size, :]
+        
+        
+        # if position == 0:
+        #     print(f"Shape original{X.shape}")
+        #     print(X.T.shape)
+
+        #Features
+        nodal_features_for_sub.append(X.T)
+
+
+        #lw
         C_reg = LedoitWolf().fit(X).covariance_
         D     = np.sqrt(np.diag(C_reg))
         R     = C_reg / np.outer(D, D)
         np.fill_diagonal(R, 0)
-        matrixes.append(R.astype(np.float32))  # float32 desde el inicio
+        lw_matrixes_for_sub.append(R.astype(np.float32))  # float32 desde el inicio
 
-    return matrixes
+    return lw_matrixes_for_sub, nodal_features_for_sub
 
 
 def create_matrixes(target_sites, save_filename):
@@ -62,12 +79,15 @@ def create_matrixes(target_sites, save_filename):
 
     for idx, (site, i, time_series) in enumerate(tqdm(tasks, desc="Creando matrices DFC", unit="sujeto")):
         try:
-            matrixes = create_dfc_matrix(time_series)
-            tensors  = [torch.from_numpy(m) for m in matrixes]
-            results_tensors.append(tensors)
+            lw_matrixes_for_sub, nodal_features_for_sub = create_dfc_matrix(time_series)
+
+            tensors_lw = [torch.from_numpy(m) for m in lw_matrixes_for_sub]
+            tensors_nodal = [torch.from_numpy(f) for f in nodal_features_for_sub]
+
+            results_tensors.append((tensors_lw, tensors_nodal))
 
             # Liberar memoria inmediatamente
-            del matrixes, tensors, time_series
+            del lw_matrixes_for_sub,nodal_features_for_sub, tensors_lw,tensors_nodal, time_series
             tasks[idx] = (site, i, None)  # liberar la serie temporal del task
 
         except Exception as e:
@@ -87,9 +107,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--modo",
-        choices=["train", "test", "all"],
+        choices=["train", "test", "all","dummy"],
         default="train",
-        help="train = sitios de entrenamiento | test = test_site | all = todos"
+        help="train = sitios de entrenamiento | test = test_site | all = todos | dummy = Un solo sitio"
     )
     args = parser.parse_args()
 
@@ -99,3 +119,5 @@ if __name__ == "__main__":
         create_matrixes([test_site], "lw_matrixes_test.pt")
     elif args.modo == "all":
         create_matrixes(list(sites) + [test_site], "lw_matrixes_all.pt")
+    elif args.modo == "dummy":
+        create_matrixes(['SBL'], "lw_matrixes_dummy.pt")

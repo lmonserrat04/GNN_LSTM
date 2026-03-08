@@ -4,7 +4,7 @@ from utils import get_edge_indexes_sparse
 from torch_geometric.data import Data, Batch
 
 
-def jump_connection_parallel(model, p_s, lw_matrixes_sequence_batch: list, hidden_state_input_batch: torch.Tensor, cell_state_batch: torch.Tensor):
+def jump_connection_parallel(model, p_s, lw_matrixes_sequence_batch: list,node_features_data_sequence_batch:list, hidden_state_input_batch: torch.Tensor, cell_state_batch: torch.Tensor):
 
     if torch.isnan(hidden_state_input_batch).any() or torch.isnan(cell_state_batch).any():
         print("⚠️ NaN detectado en hidden o cell")
@@ -12,16 +12,26 @@ def jump_connection_parallel(model, p_s, lw_matrixes_sequence_batch: list, hidde
     num_nodes  = lw_matrixes_sequence_batch[0][0].shape[0]
     batch_size = len(lw_matrixes_sequence_batch)
 
-    # Padeo — igualar longitud de todos los individuos al máximo del batch
+    # Padeo lw matrixes y node features — igualar longitud de todos los individuos al máximo del batch
     max_timesteps = max(len(seq) for seq in lw_matrixes_sequence_batch)
     lw_padded = []
-    for seq in lw_matrixes_sequence_batch:
-        if len(seq) < max_timesteps:
+    nod_feat_padded = []
+    for lw,n_f in zip(lw_matrixes_sequence_batch,node_features_data_sequence_batch):
+        if len(lw) < max_timesteps:
             # Repetir último timestep hasta llegar a max_timesteps
-            padding = [seq[-1]] * (max_timesteps - len(seq))
-            lw_padded.append(seq + padding)
+            padding_lw = [lw[-1]] * (max_timesteps - len(lw))
+            padding_n_f = [n_f[-1]] * (max_timesteps - len(n_f))
+            lw_padded.append(lw + padding_lw)
+            nod_feat_padded.append(n_f + padding_n_f)
+
         else:
-            lw_padded.append(seq)
+            lw_padded.append(lw)
+            nod_feat_padded.append(n_f)
+
+   
+
+
+    
 
     hidden_states_last_by_p = []
 
@@ -41,13 +51,14 @@ def jump_connection_parallel(model, p_s, lw_matrixes_sequence_batch: list, hidde
             data_hidden_state_list = []
 
             for j in range(batch_size):
-                x_for_individual = lw_padded[j][i].double()
+                x_for_individual_lw = lw_padded[j][i].double()
+                nod_f_for_individual = nod_feat_padded[j][i].double()
 
-                edge_index_ind  = get_edge_indexes_sparse(x_for_individual, threshold=0.5, device=device)
-                edge_weight_ind = torch.abs(x_for_individual[edge_index_ind[0], edge_index_ind[1]])
+                edge_index_ind  = get_edge_indexes_sparse(x_for_individual_lw, threshold=0.5, device=device)
+                edge_weight_ind = torch.abs(x_for_individual_lw[edge_index_ind[0], edge_index_ind[1]])
 
                 data_x_list.append(Data(
-                    x          = x_for_individual,
+                    x          = nod_f_for_individual,
                     edge_index = edge_index_ind,
                     edge_attr  = edge_weight_ind
                 ))

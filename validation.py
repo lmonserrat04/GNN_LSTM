@@ -5,7 +5,7 @@ from memory_cleanup import cleanup_batch_simple
 from utils import create_starting_hidden_state_graph, create_starting_cell_state
 
 
-def validate(model, idx_test, batch_size, epoch, X_tensors, y_tensor, X_lw_matrixes, device, threshold, num_nodes):
+def validate(model, idx_test, batch_size, epoch, X_tensors, y_tensor, X_lw_matrixes,X_node_features, device, threshold, num_nodes):
 
     print(f"Validando para epoca: {epoch+1} ")
     
@@ -19,10 +19,10 @@ def validate(model, idx_test, batch_size, epoch, X_tensors, y_tensor, X_lw_matri
             idxs_for_batch    = idx_test[i:i+batch_size]
             actual_batch_size = len(idxs_for_batch)
 
-            time_series_batch          = [X_tensors[idx].to(device) for idx in idxs_for_batch]
+            time_series_batch          = [X_tensors[idx].detach().clone().to(device) for idx in idxs_for_batch]
             lw_matrixes_sequence_batch = [[m.to(device) for m in X_lw_matrixes[idx]] for idx in idxs_for_batch]
+            node_features_data_sequence_batch = [[f.to(device) for f in X_node_features[idx]] for idx in idxs_for_batch]
             labels_batch               = y_tensor[idxs_for_batch].to(device)
-
             # BUG CORREGIDO: antes val_h y val_c venían de fuera con batch_size fijo
             # Ahora se crean aquí con el tamaño real del batch (último batch puede ser menor)
             h = create_starting_hidden_state_graph(num_nodes, actual_batch_size, model.hidden_channels).to(device)
@@ -30,7 +30,8 @@ def validate(model, idx_test, batch_size, epoch, X_tensors, y_tensor, X_lw_matri
 
             
             preds, pool_loss = model(
-                lw_matrixes_sequence=lw_matrixes_sequence_batch,
+                lw_matrixes_sequence_batch=lw_matrixes_sequence_batch,
+                node_features_data_sequence_batch = node_features_data_sequence_batch,
                 hidden_state_batch=h,
                 cell_state_batch=c,
                 time_series_batch=time_series_batch,

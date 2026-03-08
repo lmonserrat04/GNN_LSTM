@@ -21,7 +21,12 @@ set_seed()
 print("Cargando datos...")
 
 rois_time_series, rois_labels = load_rois_data(sites, df, Path(data_path))
-lw_matrixes_data              = torch.load(data_path / "lw_matrixes.pt", weights_only=False)
+all_data = torch.load(data_path / "lw_matrixes_dummy.pt", weights_only=False)
+
+# all_data = [(lw_sub1, nodal_sub1), (lw_sub2, nodal_sub2), ...]
+lw_matrixes_data  = [lw for lw, nodal in all_data]
+node_features_data = [nodal for lw, nodal in all_data]
+
 
 X         = [ts for site in sites for ts in rois_time_series[site]]
 y         = np.concatenate([rois_labels[site] for site in sites])
@@ -33,8 +38,8 @@ y_tensor  = torch.tensor(y, dtype=torch.float64)
 idx_train, idx_test = train_test_split(np.arange(len(X)), test_size=0.2, stratify=y, random_state=42)
 
 # BUG CORREGIDO: límites de debug eliminados — usar dataset completo
-# idx_train = idx_train[:8]
-# idx_test = idx_test[:8]
+idx_train = idx_train[:8]
+idx_test = idx_test[:8]
 
 torch.set_printoptions(threshold=torch.inf)
 
@@ -88,6 +93,7 @@ def run_training(cfg: dict, run_name: str) -> float:
 
             time_series_batch          = [X_tensors[idx].detach().clone().to(device) for idx in idxs_batch]
             lw_matrixes_sequence_batch = [[m.to(device) for m in lw_matrixes_data[idx]] for idx in idxs_batch]
+            node_features_data_sequence_batch = [[f.to(device) for f in node_features_data[idx]] for idx in idxs_batch]
             labels_batch               = y_tensor[idxs_batch].to(device)
 
             # BUG CORREGIDO: h y c se crean con el tamaño real del batch
@@ -98,7 +104,8 @@ def run_training(cfg: dict, run_name: str) -> float:
             # BUG CORREGIDO: antes llamaba forward 1 a 1 en un loop y acumulaba en listas vacías
             # Ahora forward recibe batch completo y devuelve [batch] preds + pool_loss scalar
             preds, pool_loss = gnn_lstm(
-                lw_matrixes_sequence=lw_matrixes_sequence_batch,
+                lw_matrixes_sequence_batch=lw_matrixes_sequence_batch,
+                node_features_data_sequence_batch = node_features_data_sequence_batch,
                 hidden_state_batch=h,
                 cell_state_batch=c,
                 time_series_batch=time_series_batch,
@@ -160,6 +167,7 @@ def run_training(cfg: dict, run_name: str) -> float:
             X_tensors=X_tensors,
             y_tensor=y_tensor,
             X_lw_matrixes=lw_matrixes_data,
+            X_node_features=node_features_data,
             device=device,
             threshold=0.5,
             num_nodes=num_nodes,

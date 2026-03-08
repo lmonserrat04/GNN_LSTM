@@ -122,10 +122,10 @@ class GNN_LSTM(nn.Module):
         # BUG CORREGIDO: mismo problema que gconv
         return gcn_layer(batch.x, batch.edge_index, edge_weight=batch.edge_attr)
 
-    def forward(self, lw_matrixes_sequence, hidden_state_batch, cell_state_batch, time_series_batch):
+    def forward(self, lw_matrixes_sequence_batch,node_features_data_sequence_batch, hidden_state_batch, cell_state_batch, time_series_batch):
 
         hidden_states_last_by_p = jump_connection_parallel(
-            self, [1, 2], lw_matrixes_sequence, hidden_state_batch, cell_state_batch
+            self, [1, 2], lw_matrixes_sequence_batch, node_features_data_sequence_batch, hidden_state_batch, cell_state_batch
         )
 
         # Ecuación 14 — suma ponderada con mapping layers
