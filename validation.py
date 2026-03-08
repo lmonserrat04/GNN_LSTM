@@ -8,6 +8,7 @@ from utils import create_starting_hidden_state_graph, create_starting_cell_state
 def validate(model, idx_test, batch_size, epoch, X_tensors, y_tensor, X_lw_matrixes, device, threshold, num_nodes):
 
     print(f"Validando para epoca: {epoch+1} ")
+    
 
     n_samples  = 0
     total_loss = 0
@@ -36,9 +37,8 @@ def validate(model, idx_test, batch_size, epoch, X_tensors, y_tensor, X_lw_matri
                 time_series_batch=time_series_batch,
             )
 
-            # pred_prob para debug
-            for k in range(actual_batch_size):
-                print(f"pred_prob={torch.sigmoid(preds[k]):.4f} | label={labels_batch[k].item():.1f}")
+            
+            print(f"pred_prob={torch.sigmoid(preds):.4f} | label={labels_batch}")
 
             # BUG CORREGIDO: compute_loss ya recibe pool_loss scalar directamente
             loss = model.compute_loss(preds, labels_batch, pool_loss)
