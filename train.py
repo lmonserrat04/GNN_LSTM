@@ -21,7 +21,7 @@ set_seed()
 print("Cargando datos...")
 
 rois_time_series, rois_labels = load_rois_data(sites, df, Path(data_path))
-all_data = torch.load(data_path / "lw_matrixes_dummy.pt", weights_only=False)
+all_data = torch.load(data_path / "lw_matrixes.pt", weights_only=False)
 
 # all_data = [(lw_sub1, nodal_sub1), (lw_sub2, nodal_sub2), ...]
 lw_matrixes_data  = [lw for lw, nodal in all_data]
