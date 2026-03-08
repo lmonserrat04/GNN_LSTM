@@ -186,7 +186,7 @@ if __name__ == "__main__":
         "weight_decay":        0.05,
         "scheduler_step_size": 10,
         "scheduler_gamma":     0.4,
-        "batch_size":          4,
+        "batch_size":          32,
         "n_epochs":            150,
         "max_grad_norm":       5.0,
         "patience":            35,
