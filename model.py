@@ -68,22 +68,25 @@ class GNN_LSTM(nn.Module):
         self.input_gnn = GCNConv(num_node_features, hidden_channels)
         self.forget_gnn = GCNConv(num_node_features, hidden_channels)
         self.output_gnn = GCNConv(num_node_features, hidden_channels)
-        self.modulation_gnn = GCNConv(num_node_features, hidden_channels)
+        self.modulation_gnn = GCNConv(num_node_features, hidden_channels, bias=False)
 
         # GCN para el hidden state (H_{t-p})
         self.input_gnn_hidden_state = GCNConv(hidden_channels, hidden_channels)
         self.forget_gnn_hidden_state = GCNConv(hidden_channels, hidden_channels)
         self.output_gnn_hidden_state = GCNConv(hidden_channels, hidden_channels)
-        self.modulation_gnn_hidden_state = GCNConv(hidden_channels, hidden_channels)
+        self.modulation_gnn_hidden_state = GCNConv(hidden_channels, hidden_channels, bias=False)
 
         # Dropout gnn
-        #self.gnn_dropout = nn.Dropout(p=0.3)
+        self.gnn_dropout = nn.Dropout(p=0.3)
 
         # Xavier initialization
         for gnn in [self.input_gnn, self.forget_gnn, self.output_gnn, self.modulation_gnn,
                     self.input_gnn_hidden_state, self.forget_gnn_hidden_state,
                     self.output_gnn_hidden_state, self.modulation_gnn_hidden_state]:
             nn.init.xavier_uniform_(gnn.lin.weight, gain=2.0)
+
+        for gnn in [self.forget_gnn, self.forget_gnn_hidden_state]:
+            nn.init.constant_(gnn.bias, 1.0)
 
         # Mapping layers ecuación 14 del paper
         self.mapping_layers = nn.ModuleDict({
@@ -93,7 +96,7 @@ class GNN_LSTM(nn.Module):
         }).double()
 
         # Layer norm modulation gate
-        self.mod_norm = nn.LayerNorm(hidden_channels)
+        #self.mod_norm = nn.LayerNorm(hidden_channels)
 
         # BUG CORREGIDO: antes se instanciaba sin num_nodes
         self.dg_pool = DGPool(hidden_channels, pool_ratio, num_nodes)

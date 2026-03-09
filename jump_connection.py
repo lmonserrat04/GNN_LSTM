@@ -83,13 +83,13 @@ def jump_connection_parallel(
             #   → fuera de [-1, 1] el gradiente es 0 igual que sigmoid saturada,
             #     pero la región activa es más amplia y el gradiente no se aplasta
 
-            gx_input  = model.gconv(model.input_gnn,  batch_x)
-            gx_forget = model.gconv(model.forget_gnn, batch_x)
-            gx_output = model.gconv(model.output_gnn, batch_x)
+            gx_input  = model.gnn_dropout(model.gconv(model.input_gnn,  batch_x))
+            gx_forget = model.gnn_dropout(model.gconv(model.forget_gnn, batch_x))
+            gx_output = model.gnn_dropout(model.gconv(model.output_gnn, batch_x))
 
-            gh_input  = model.gconv(model.input_gnn_hidden_state,      batch_hs)
-            gh_forget = model.gconv(model.forget_gnn_hidden_state,     batch_hs)
-            gh_output = model.gconv(model.output_gnn_hidden_state,     batch_hs)
+            gh_input  = model.gnn_dropout(model.gconv(model.input_gnn_hidden_state,  batch_hs))
+            gh_forget = model.gnn_dropout(model.gconv(model.forget_gnn_hidden_state, batch_hs))
+            gh_output = model.gnn_dropout(model.gconv(model.output_gnn_hidden_state, batch_hs))
 
             # ANTES: input_gate  = torch.sigmoid(gx_input  + gh_input)
             # ANTES: forget_gate = torch.sigmoid(gx_forget + gh_forget)
@@ -102,8 +102,9 @@ def jump_connection_parallel(
                 model.gconv_linear(model.modulation_gnn,              batch_x) +
                 model.gconv_linear(model.modulation_gnn_hidden_state, batch_hs)
             )
-            modulation = torch.relu(model.mod_norm(mod_raw))
+            modulation = torch.tanh(torch.clamp(mod_raw, -3.0, 3.0))
 
+            
             new_cell   = torch.tanh(input_gate * modulation + forget_gate * cell_state_p)
             new_hidden = output_gate * torch.tanh(new_cell)
 

@@ -27,9 +27,8 @@ python create_matrixes.py --modo dummy
 """
 
 
-def create_dfc_matrix(time_fmri_series: np.ndarray, window_size=40, step=10):
+def create_dfc_matrixes(time_fmri_series: np.ndarray, window_size=40, step=10):
     subject_data: np.ndarray = np.array(time_fmri_series, dtype=np.float32) if not isinstance(time_fmri_series, np.ndarray) else time_fmri_series.astype(np.float32)
-    subject_data: np.ndarray = z_score_norm(subject_data)
     n_time       = subject_data.shape[0]
 
     lw_matrixes_for_sub     = []
@@ -62,6 +61,7 @@ def create_matrixes(target_sites, save_filename):
     print(f"Sitios a procesar: {target_sites}")
     print("Cargando datos de ROIs...")
     rois_time_series, _ = load_rois_data(target_sites, df, data_path)
+    rois_time_series = z_score_norm(rois_time_series)
 
     tasks = []
     for site in target_sites:
@@ -79,7 +79,7 @@ def create_matrixes(target_sites, save_filename):
 
     for idx, (site, i, time_series) in enumerate(tqdm(tasks, desc="Creando matrices DFC", unit="sujeto")):
         try:
-            lw_matrixes_for_sub, nodal_features_for_sub = create_dfc_matrix(time_series)
+            lw_matrixes_for_sub, nodal_features_for_sub = create_dfc_matrixes(time_series)
 
             tensors_lw = [torch.from_numpy(m) for m in lw_matrixes_for_sub]
             tensors_nodal = [torch.from_numpy(f) for f in nodal_features_for_sub]

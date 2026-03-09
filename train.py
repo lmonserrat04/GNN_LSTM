@@ -4,6 +4,7 @@ from config import torch
 import time
 from sklearn.model_selection import train_test_split
 from torch.optim.lr_scheduler import StepLR
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from config import device
 from memory_cleanup import cleanup_batch_simple
 from config import data_path, num_nodes, num_node_features, sites, df
@@ -31,8 +32,8 @@ node_features_data = [nodal for lw, nodal in all_data]
 X         = [ts for site in sites for ts in rois_time_series[site]]
 y         = np.concatenate([rois_labels[site] for site in sites])
 
-X_norm    = [z_score_norm(ts) for site in sites for ts in rois_time_series[site]]
-X_tensors = [torch.tensor(ts, dtype=torch.float64) for ts in X_norm]
+
+X_tensors = [torch.tensor(ts, dtype=torch.float64) for ts in X]
 y_tensor  = torch.tensor(y, dtype=torch.float64)
 
 idx_train, idx_test = train_test_split(np.arange(len(X)), test_size=0.2, stratify=y, random_state=42)
@@ -63,7 +64,9 @@ def run_training(cfg: dict, run_name: str) -> float:
         {'params': [p for n, p in gnn_lstm.named_parameters() if 'gnn' in n], 'lr': cfg["lr"] * 10},
         {'params': [p for n, p in gnn_lstm.named_parameters() if 'gnn' not in n], 'lr': cfg["lr"]},
     ], weight_decay=cfg["weight_decay"])
-    scheduler  = StepLR(optimizer, step_size=cfg["scheduler_step_size"], gamma=cfg["scheduler_gamma"])
+
+    
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=5, factor=0.5)
     early_stop = EarlyStopping(patience=cfg["patience"], min_delta=cfg["min_delta"])
 
     checkpoint_path = f'checkpoint_{run_name}.pth'
@@ -75,12 +78,17 @@ def run_training(cfg: dict, run_name: str) -> float:
         last_batch_index = 0
 
     avg_train_loss = 0.0
+    
 
     for epoch in range(start_epoch, cfg["n_epochs"]):
         print(f"🎯 Época {epoch+1}/{cfg['n_epochs']}  [{run_name}]")
         t_epoch = time.time()
 
+        
         gnn_lstm.train()
+
+
+
         total_loss  = 0.0
         batch_count = last_batch_index
         loss        = torch.tensor(0.0, device=device)
@@ -116,38 +124,39 @@ def run_training(cfg: dict, run_name: str) -> float:
             loss = gnn_lstm.compute_loss(preds, labels_batch, pool_loss)
 
             optimizer.zero_grad()
+            
             loss.backward()
 
-            if epoch == 0 and batch_count == 0:
-                print("\n==== DIAGNÓSTICO GRADIENTES ====")
-                gnn_norms = []
-                mlp_norms = []
-                for name, param in gnn_lstm.named_parameters():
-                    if param.grad is not None:
-                        norm = param.grad.norm().item()
-                        if 'gnn' in name:
-                            gnn_norms.append((name, norm))
-                        else:
-                            mlp_norms.append((name, norm))
+            # if epoch == 0 and batch_count == 0:
+            #     print("\n==== DIAGNÓSTICO GRADIENTES ====")
+            #     gnn_norms = []
+            #     mlp_norms = []
+            #     for name, param in gnn_lstm.named_parameters():
+            #         if param.grad is not None:
+            #             norm = param.grad.norm().item()
+            #             if 'gnn' in name:
+            #                 gnn_norms.append((name, norm))
+            #             else:
+            #                 mlp_norms.append((name, norm))
 
-                print("── GNN ──")
-                for name, norm in gnn_norms:
-                    bar = '█' * min(int(norm * 200), 30)
-                    print(f"  {name:<45} {norm:.6f}  {bar}")
+            #     print("── GNN ──")
+            #     for name, norm in gnn_norms:
+            #         bar = '█' * min(int(norm * 200), 30)
+            #         print(f"  {name:<45} {norm:.6f}  {bar}")
 
-                print("── LSTM + MLP ──")
-                for name, norm in mlp_norms:
-                    bar = '█' * min(int(norm * 200), 30)
-                    print(f"  {name:<45} {norm:.6f}  {bar}")
+            #     print("── LSTM + MLP ──")
+            #     for name, norm in mlp_norms:
+            #         bar = '█' * min(int(norm * 200), 30)
+            #         print(f"  {name:<45} {norm:.6f}  {bar}")
 
-                gnn_mean = sum(n for _, n in gnn_norms) / len(gnn_norms) if gnn_norms else 0
-                mlp_mean = sum(n for _, n in mlp_norms) / len(mlp_norms) if mlp_norms else 0
-                ratio    = mlp_mean / gnn_mean if gnn_mean > 0 else float('inf')
-                print(f"\n  GNN grad medio:     {gnn_mean:.6f}")
-                print(f"  LSTM+MLP grad medio:{mlp_mean:.6f}")
-                print(f"  Ratio MLP/GNN:      {ratio:.1f}x  ← objetivo: < 10x")
-                print("================================\n")
-
+            #     gnn_mean = sum(n for _, n in gnn_norms) / len(gnn_norms) if gnn_norms else 0
+            #     mlp_mean = sum(n for _, n in mlp_norms) / len(mlp_norms) if mlp_norms else 0
+            #     ratio    = mlp_mean / gnn_mean if gnn_mean > 0 else float('inf')
+            #     print(f"\n  GNN grad medio:     {gnn_mean:.6f}")
+            #     print(f"  LSTM+MLP grad medio:{mlp_mean:.6f}")
+            #     print(f"  Ratio MLP/GNN:      {ratio:.1f}x  ← objetivo: < 10x")
+            #     print("================================\n")
+            
 
             #Inspeccionar gradientes
             # for name, param in gnn_lstm.named_parameters():
@@ -158,7 +167,7 @@ def run_training(cfg: dict, run_name: str) -> float:
 
             gnn_params  = [p for n, p in gnn_lstm.named_parameters() if 'gnn' in n]
             rest_params = [p for n, p in gnn_lstm.named_parameters() if 'gnn' not in n]
-            torch.nn.utils.clip_grad_norm_(gnn_params,  max_norm=5.0)
+            torch.nn.utils.clip_grad_norm_(gnn_params,  max_norm=2.0)
             torch.nn.utils.clip_grad_norm_(rest_params, max_norm=1.0)
             optimizer.step()
 
@@ -182,9 +191,7 @@ def run_training(cfg: dict, run_name: str) -> float:
                 },
             )
 
-        scheduler.step()
-        save_checkpoint(gnn_lstm, optimizer, scheduler, early_stop, epoch, batch_count, loss.item(), checkpoint_path)
-
+       
         gnn_lstm.eval()
 
         print(f"Validando Época {epoch+1}/{cfg['n_epochs']}")
@@ -204,6 +211,10 @@ def run_training(cfg: dict, run_name: str) -> float:
             threshold=0.5,
             num_nodes=num_nodes,
         )
+        
+        scheduler.step(val_loss)
+        save_checkpoint(gnn_lstm, optimizer, scheduler, early_stop, epoch, batch_count, loss.item(), checkpoint_path)
+
 
         tiempo_epoca = time.time() - t_epoch
         print(f"\n📊 Época {epoch+1} | Train loss: {avg_train_loss:.4f} | Val loss actual: {val_loss:.4f} | Mejor val loss: {early_stop.best_loss:.4f} | {tiempo_epoca:.1f}s")

@@ -1,6 +1,6 @@
 import random
 import numpy as np
-from config import torch
+from config import torch, sites
 
 
 def set_seed(seed=42):
@@ -10,19 +10,38 @@ def set_seed(seed=42):
     torch.cuda.manual_seed_all(seed)
 
 
-def z_score_norm(x):
-    mean = x.mean(axis=0)
-    std = x.std(axis=0)
-    std[std == 0] = 1
-    return (x - mean) / std
+def z_score_norm(rois_time_series: dict):
+    normalized_time_series_by_site = {}
+
+    for site in sites:
+        normalized_time_series_by_site[site] = []
+        n_subjects_in_site = len(rois_time_series[site])
+        site_time_series = []
+        for i in range(n_subjects_in_site):
+            site_time_series.append(rois_time_series[site][i])
+
+        concat_series = np.concatenate(site_time_series)
+        mean = concat_series.mean(axis=0)
+        std = concat_series.std(axis=0)
+        std[std == 0] = 1
+
+        for ts in site_time_series:
+            ts_norm_for_sub_in_site = (ts - mean) / std
+            normalized_time_series_by_site[site].append(ts_norm_for_sub_in_site)
+
+    return normalized_time_series_by_site
+
+        
 
 
-def create_starting_hidden_state_graph(num_nodes: int,batch_size:int, hidden_channels: int):
-    return torch.zeros((num_nodes * batch_size, hidden_channels), dtype=torch.float64)
+
+def create_starting_hidden_state_graph(num_nodes, batch_size, hidden_channels):
+    return torch.randn(num_nodes * batch_size, hidden_channels, dtype=torch.float64) * 0.01
+
 
 
 def create_starting_cell_state(num_nodes: int,batch_size:int, hidden_channels: int):
-    return torch.zeros((num_nodes * batch_size, hidden_channels), dtype=torch.float64)
+    return torch.randn(num_nodes * batch_size, hidden_channels, dtype=torch.float64) * 0.01
 
 
 def get_edge_indexes_fully_connected(num_nodes, device):
