@@ -113,7 +113,7 @@ class GNN_LSTM(nn.Module):
         self.mlp_layer_1 = nn.Linear(hidden_channels * 2, hidden_channels)
         self.mlp_layer_2 = nn.Linear(hidden_channels, hidden_channels // 2)
         self.mlp_layer_3 = nn.Linear(hidden_channels // 2, 1)
-        self.mlp_dropout = nn.Dropout(p=0.5)
+        self.mlp_dropout = nn.Dropout(p=0.7)
         self.mlp_ln = nn.LayerNorm(hidden_channels)
 
     def gconv(self, gcn_layer, batch):

@@ -13,6 +13,9 @@ def validate(model, idx_test, batch_size, epoch, X_tensors, y_tensor, X_lw_matri
     n_samples  = 0
     total_loss = 0
 
+    all_preds = []
+    all_labels = []
+
     with torch.no_grad():
         for i in range(0, len(idx_test), batch_size):
 
@@ -45,6 +48,8 @@ def validate(model, idx_test, batch_size, epoch, X_tensors, y_tensor, X_lw_matri
             #     correct    = "✅" if pred_class.strip() == true_class.strip() else "❌"
             #     print(f"  {correct} pred={pred_class} ({prob:.3f}) | true={true_class}")
 
+            all_preds.append(torch.sigmoid(preds) > 0.5)
+            all_labels.append(labels_batch)
             
             # BUG CORREGIDO: compute_loss ya recibe pool_loss scalar directamente
             loss = model.compute_loss(preds, labels_batch, pool_loss)
@@ -69,5 +74,11 @@ def validate(model, idx_test, batch_size, epoch, X_tensors, y_tensor, X_lw_matri
                 }
             )
 
+    all_preds  = torch.cat(all_preds).float()
+    all_labels = torch.cat(all_labels).float()
+    acc = (all_preds == all_labels).float().mean()
+    print(f"Val accuracy global: {acc:.3f}")
+
+    exit()
     print(f"Fin de validacion en la epoca : {epoch+1}")
     return total_loss / n_samples

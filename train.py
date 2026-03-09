@@ -38,6 +38,19 @@ y_tensor  = torch.tensor(y, dtype=torch.float64)
 
 idx_train, idx_test = train_test_split(np.arange(len(X)), test_size=0.2, stratify=y, random_state=42)
 
+# # Cuántos edges tiene un grafo típico
+# lw = lw_matrixes_data[0][0]  # primer sujeto, primer timestep
+# edges = (lw.abs() > 0.5).sum().item()
+# total = 200 * 200
+# print(f"Edges activos: {edges} / {total} = {edges/total*100:.1f}%")
+
+# # Diferencia media entre un ASD y un TC
+# asd_idx = (y == 1).nonzero()[0][0]
+# tc_idx  = (y == 0).nonzero()[0][0]
+# diff = (lw_matrixes_data[asd_idx][0] - lw_matrixes_data[tc_idx][0]).abs().mean()
+# print(f"Diferencia media ASD vs TC primer timestep: {diff:.4f}")
+# exit()
+
 # BUG CORREGIDO: límites de debug eliminados — usar dataset completo
 #idx_train = idx_train[:8]
 #idx_test = idx_test[:8]
@@ -157,7 +170,7 @@ def run_training(cfg: dict, run_name: str) -> float:
             #     print(f"  Ratio MLP/GNN:      {ratio:.1f}x  ← objetivo: < 10x")
             #     print("================================\n")
             
-
+            
             #Inspeccionar gradientes
             # for name, param in gnn_lstm.named_parameters():
             #     if param.grad is not None:
@@ -239,9 +252,9 @@ def run_training(cfg: dict, run_name: str) -> float:
 if __name__ == "__main__":
     cfg = {
         "pool_ratio":          0.5,
-        "hidden_channels":     64,
+        "hidden_channels":     32,
         "lr":                  0.001,
-        "weight_decay":        0.05,
+        "weight_decay":        0.1,
         "scheduler_step_size": 10,
         "scheduler_gamma":     0.4,
         "batch_size":          32,
