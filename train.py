@@ -78,8 +78,8 @@ def run_training(cfg: dict, run_name: str) -> float:
     ).to(device).double()
 
     optimizer = torch.optim.Adam([
-        {'params': [p for n, p in gnn_lstm.named_parameters() if 'gnn' in n], 'lr': cfg["lr"] * 10},
-        {'params': [p for n, p in gnn_lstm.named_parameters() if 'gnn' not in n], 'lr': cfg["lr"]},
+        {'params': [p for n, p in gnn_lstm.named_parameters() if 'gnn' in n], 'lr': cfg["lr"] * 20},
+        {'params': [p for n, p in gnn_lstm.named_parameters() if 'gnn' not in n], 'lr': cfg["lr"] * 0.1},
     ], weight_decay=cfg["weight_decay"])
 
     
@@ -105,9 +105,9 @@ def run_training(cfg: dict, run_name: str) -> float:
         gnn_lstm.train()
 
         #Freezear
-        for name, param in gnn_lstm.named_parameters():
-            if 'lstm_raw_fmri' not in name and 'mlp' not in name and 'pool' not in name:
-                param.requires_grad = False
+        # for name, param in gnn_lstm.named_parameters():
+        #     if 'lstm_raw_fmri' not in name and 'mlp' not in name and 'pool' not in name:
+        #         param.requires_grad = False
 
 
         total_loss  = 0.0
@@ -262,7 +262,7 @@ if __name__ == "__main__":
         "pool_ratio":          0.5,
         "hidden_channels":     32,
         "lr":                  0.001,
-        "weight_decay":        0.1,
+        "weight_decay":        1e-4,
         "scheduler_step_size": 10,
         "scheduler_gamma":     0.4,
         "batch_size":          32,

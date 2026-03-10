@@ -79,6 +79,9 @@ class GNN_LSTM(nn.Module):
         # Dropout gnn
         self.gnn_dropout = nn.Dropout(p=0.3)
 
+        self.gnn_norm = nn.LayerNorm(hidden_channels)
+
+        
         # Xavier initialization
         for gnn in [self.input_gnn, self.forget_gnn, self.output_gnn, self.modulation_gnn,
                     self.input_gnn_hidden_state, self.forget_gnn_hidden_state,
@@ -95,8 +98,6 @@ class GNN_LSTM(nn.Module):
             'p2_i1': nn.Linear(hidden_channels, hidden_channels, bias=False),
         }).double()
 
-        # Layer norm modulation gate
-        #self.mod_norm = nn.LayerNorm(hidden_channels)
 
         # BUG CORREGIDO: antes se instanciaba sin num_nodes
         self.dg_pool = DGPool(hidden_channels, pool_ratio, num_nodes)
@@ -109,11 +110,14 @@ class GNN_LSTM(nn.Module):
             batch_first=False
         )
 
+        self.input_norm_lstm = nn.LayerNorm(50)
+        self.embed_lstm_norm = nn.LayerNorm(hidden_channels)
+
         # MLP Clasificacion final
         self.mlp_layer_1 = nn.Linear(hidden_channels * 2, hidden_channels)
         self.mlp_layer_2 = nn.Linear(hidden_channels, hidden_channels // 2)
         self.mlp_layer_3 = nn.Linear(hidden_channels // 2, 1)
-        self.mlp_dropout = nn.Dropout(p=0.7)
+        self.mlp_dropout = nn.Dropout(p=0.5)
         self.mlp_ln = nn.LayerNorm(hidden_channels)
 
     def gconv(self, gcn_layer, batch):
@@ -129,7 +133,7 @@ class GNN_LSTM(nn.Module):
 
         hidden_states_last_by_p = jump_connection_parallel(
             model = self, 
-            p_s = [1, 2], 
+            p_s = [1,2], 
             lw_matrixes_sequence_batch=lw_matrixes_sequence_batch, 
             node_features_sequence_batch=node_features_data_sequence_batch,
             hidden_state_input_batch=hidden_state_batch, 
@@ -151,11 +155,14 @@ class GNN_LSTM(nn.Module):
         # BUG CORREGIDO: antes mean(dim=0) colapsaba todo el batch en un solo vector
         # Ahora DGPool devuelve [batch, F] y pool_loss scalar
         high_level_embeddings, pool_loss = self.dg_pool(output)  # [batch, F]
+        high_level_embeddings = self.gnn_norm(high_level_embeddings)
 
         # ==== LSTM raw fMRI ====
         # BUG CORREGIDO: antes recibía tensor individual, ahora recibe lista
-        low_level_embeddings = self.lstm_raw_time_series(time_series_batch)  # [batch, F]
+        low_level_embeddings = self.lstm_raw_time_series(time_series_batch) # [batch, F]
+        low_level_embeddings = self.embed_lstm_norm(low_level_embeddings)
 
+        
         # ==== Fusión por individuo ====
         # BUG CORREGIDO: antes cat(..., dim=0) para un solo individuo
         # Ahora dim=1 porque ambos son [batch, F]
@@ -168,6 +175,8 @@ class GNN_LSTM(nn.Module):
         return preds, pool_loss
 
     def lstm_raw_time_series(self, time_series_batch):
+
+        time_series_batch = [self.input_norm_lstm(ts) for ts in time_series_batch]
         # Obtener longitudes reales de cada serie
         lengths = torch.tensor([ts.shape[0] for ts in time_series_batch], dtype=torch.long)
 
@@ -190,7 +199,7 @@ class GNN_LSTM(nn.Module):
         x = self.mlp_layer_3(x)
         return x  # [batch, 1]
 
-    def compute_loss(self, prediction_batch, label_batch, pool_loss, lambda_pool=0):
+    def compute_loss(self, prediction_batch, label_batch, pool_loss, lambda_pool=0.05):
         # BUG CORREGIDO: antes recibía pool_losses_batch tensor y hacía mean
         # Ahora pool_loss ya es scalar directo de DGPool batched
         loss_ce = F.binary_cross_entropy_with_logits(prediction_batch, label_batch)
