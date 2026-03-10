@@ -11,7 +11,7 @@ from config import data_path, num_nodes, num_node_features, sites, df
 from data_loader import load_rois_data
 from model import GNN_LSTM
 from checkpoint import save_checkpoint, load_checkpoint
-from utils import set_seed, create_starting_hidden_state_graph, create_starting_cell_state, EarlyStopping, z_score_norm
+from utils import set_seed, create_starting_hidden_state_graph, create_starting_cell_state, EarlyStopping, reduce_dimensionality
 from validation import validate
 
 
@@ -19,24 +19,6 @@ print("Usando device:", device)
 
 set_seed()
 
-print("Cargando datos...")
-
-rois_time_series, rois_labels = load_rois_data(sites, df, Path(data_path))
-all_data = torch.load(data_path / "lw_matrixes.pt", weights_only=False)
-
-# all_data = [(lw_sub1, nodal_sub1), (lw_sub2, nodal_sub2), ...]
-lw_matrixes_data  = [lw for lw, nodal in all_data]
-node_features_data = [nodal for lw, nodal in all_data]
-
-
-X         = [ts for site in sites for ts in rois_time_series[site]]
-y         = np.concatenate([rois_labels[site] for site in sites])
-
-
-X_tensors = [torch.tensor(ts, dtype=torch.float64) for ts in X]
-y_tensor  = torch.tensor(y, dtype=torch.float64)
-
-idx_train, idx_test = train_test_split(np.arange(len(X)), test_size=0.2, stratify=y, random_state=42)
 
 # # Cuántos edges tiene un grafo típico
 # lw = lw_matrixes_data[0][0]  # primer sujeto, primer timestep
@@ -65,10 +47,32 @@ def run_training(cfg: dict, run_name: str) -> float:
         print(f"  {k} = {v}")
     print(f"{'='*50}\n")
 
+    print("Cargando datos...")
+
+    rois_time_series, rois_labels = load_rois_data(sites, df, Path(data_path))
+    rois_time_series = reduce_dimensionality(rois_time_series, n_components=50)  # ← agregar esto
+
+    all_data = torch.load(data_path / cfg['data_name'], weights_only=False)
+
+    # all_data = [(lw_sub1, nodal_sub1), (lw_sub2, nodal_sub2), ...]
+    lw_matrixes_data  = [lw for lw, nodal in all_data]
+    node_features_data = [nodal for lw, nodal in all_data]
+
+
+    X         = [ts for site in sites for ts in rois_time_series[site]]
+    y         = np.concatenate([rois_labels[site] for site in sites])
+
+    X_tensors = [torch.tensor(ts, dtype=torch.float64) for ts in X]
+    y_tensor  = torch.tensor(y, dtype=torch.float64)
+
+    idx_train, idx_test = train_test_split(np.arange(len(X)), test_size=0.2, stratify=y, random_state=42)
+
+
     batch_size = cfg["batch_size"]
 
     gnn_lstm = GNN_LSTM(
-        num_node_features,
+        num_node_features=40,
+        num_nodes=200,
         hidden_channels=cfg["hidden_channels"],
         pool_ratio=cfg["pool_ratio"],
     ).to(device).double()
@@ -100,6 +104,10 @@ def run_training(cfg: dict, run_name: str) -> float:
         
         gnn_lstm.train()
 
+        #Freezear
+        for name, param in gnn_lstm.named_parameters():
+            if 'lstm_raw_fmri' not in name and 'mlp' not in name and 'pool' not in name:
+                param.requires_grad = False
 
 
         total_loss  = 0.0
@@ -262,6 +270,7 @@ if __name__ == "__main__":
         "max_grad_norm":       5.0,
         "patience":            35,
         "min_delta":           0.001,
+        "data_name":           "lw_matrixes.pt"
     }
     run_name = f"pool{cfg['pool_ratio']}_hid{cfg['hidden_channels']}"
     run_training(cfg, run_name)

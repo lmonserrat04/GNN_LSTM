@@ -79,6 +79,6 @@ def validate(model, idx_test, batch_size, epoch, X_tensors, y_tensor, X_lw_matri
     acc = (all_preds == all_labels).float().mean()
     print(f"Val accuracy global: {acc:.3f}")
 
-    exit()
+    
     print(f"Fin de validacion en la epoca : {epoch+1}")
     return total_loss / n_samples

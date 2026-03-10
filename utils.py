@@ -1,7 +1,7 @@
 import random
 import numpy as np
 from config import torch, sites
-
+from sklearn.decomposition import PCA
 
 def set_seed(seed=42):
     random.seed(seed)
@@ -31,8 +31,23 @@ def z_score_norm(rois_time_series: dict):
 
     return normalized_time_series_by_site
 
-        
+def reduce_dimensionality(rois_time_series:dict, n_components:int):
+    reduced_time_series_by_site = {}
 
+    for site in sites:
+        pca = PCA(n_components= n_components)
+        reduced_time_series_by_site[site] = []
+        n_subjects_in_site = len(rois_time_series[site])
+        site_time_series = []
+        for i in range(n_subjects_in_site):
+            site_time_series.append(rois_time_series[site][i])
+
+        concat_series = np.concatenate(site_time_series)
+        pca.fit(concat_series)
+        for ts in site_time_series:
+            reduced_time_series_by_site[site].append(pca.transform(ts))
+
+    return reduced_time_series_by_site
 
 
 def create_starting_hidden_state_graph(num_nodes, batch_size, hidden_channels):

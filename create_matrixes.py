@@ -10,7 +10,7 @@ import torch
 import numpy as np
 from sklearn.covariance import LedoitWolf
 from tqdm import tqdm
-from utils import z_score_norm
+from utils import z_score_norm, reduce_dimensionality
 
 """
 # Solo sitios de entrenamiento → guarda lw_matrixes.pt
@@ -19,8 +19,8 @@ python create_matrixes.py --modo train
 # Solo test site → guarda lw_matrixes_test.pt
 python create_matrixes.py --modo test
 
-# Todos → guarda lw_matrixes_all.pt
-python create_matrixes.py --modo all
+# Experimental
+python create_matrixes.py --modo red
 
 #Dummy dataset
 python create_matrixes.py --modo dummy
@@ -61,7 +61,7 @@ def create_matrixes(target_sites, save_filename):
     print(f"Sitios a procesar: {target_sites}")
     print("Cargando datos de ROIs...")
     rois_time_series, _ = load_rois_data(target_sites, df, data_path)
-    rois_time_series = z_score_norm(rois_time_series)
+    rois_time_series = reduce_dimensionality(z_score_norm(rois_time_series),50)
 
     tasks = []
     for site in target_sites:
@@ -107,7 +107,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--modo",
-        choices=["train", "test", "all","dummy"],
+        choices=["train", "test", "red","dummy"],
         default="train",
         help="train = sitios de entrenamiento | test = test_site | all = todos | dummy = Un solo sitio"
     )
@@ -117,7 +117,7 @@ if __name__ == "__main__":
         create_matrixes(list(sites), "lw_matrixes.pt")
     elif args.modo == "test":
         create_matrixes([test_site], "lw_matrixes_test.pt")
-    elif args.modo == "all":
-        create_matrixes(list(sites) + [test_site], "lw_matrixes_all.pt")
+    elif args.modo == "red":
+        create_matrixes(list(sites), f"lw_matrixes_{str(args.modo)}.pt")
     elif args.modo == "dummy":
         create_matrixes(['SBL'], "lw_matrixes_dummy.pt")

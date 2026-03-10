@@ -5,7 +5,7 @@ import torch
 
 
 def save_checkpoint(model, optimizer, scheduler, early_stopper, epoch, current_batch_index, loss, path='checkpoint.pth'):
-    print(f"   💾 Guardando checkpoint para época {epoch}...")
+    #print(f"   💾 Guardando checkpoint para época {epoch}...")
     try:
         checkpoint = {
             'epoch': epoch,
@@ -32,7 +32,7 @@ def save_checkpoint(model, optimizer, scheduler, early_stopper, epoch, current_b
             for key in required_keys:
                 if key not in test:
                     raise ValueError(f"Clave faltante en checkpoint: {key}")
-            print(f"   ✅ Checkpoint verificado correctamente")
+            #print(f"   ✅ Checkpoint verificado correctamente")
         except Exception as e:
             print(f"   ❌ Error al verificar checkpoint: {e}")
             if os.path.exists(temp_path):
@@ -44,7 +44,7 @@ def save_checkpoint(model, optimizer, scheduler, early_stopper, epoch, current_b
         if os.path.exists(path):
             try:
                 shutil.copy2(path, backup_path)
-                print(f"   📁 Backup creado: {backup_path}")
+                #print(f"   📁 Backup creado: {backup_path}")
             except Exception as e:
                 print(f"   ⚠️ No se pudo crear backup: {e}")
 
@@ -52,7 +52,8 @@ def save_checkpoint(model, optimizer, scheduler, early_stopper, epoch, current_b
         shutil.move(temp_path, path)
 
         if os.path.exists(path) and os.path.getsize(path) > 100:
-            print(f"   ✅ Checkpoint guardado exitosamente en época {epoch}")
+            print()
+            #print(f"   ✅ Checkpoint guardado exitosamente en época {epoch}")
         else:
             raise IOError("El archivo final no se creó correctamente")
 

@@ -11,12 +11,15 @@ def jump_connection_parallel(
     node_features_sequence_batch: list,
     hidden_state_input_batch: torch.Tensor,
     cell_state_batch: torch.Tensor,
+    threshold:float,
 ):
     if torch.isnan(hidden_state_input_batch).any() or torch.isnan(cell_state_batch).any():
         print("⚠️ NaN detectado en hidden o cell")
 
+    
     num_nodes  = lw_matrixes_sequence_batch[0][0].shape[0]
     batch_size = len(lw_matrixes_sequence_batch)
+    
 
     real_lengths  = [len(seq) for seq in lw_matrixes_sequence_batch]
     max_timesteps = max(real_lengths)
@@ -33,8 +36,6 @@ def jump_connection_parallel(
 
     hidden_states_last_by_p = []
 
-    # Para diagnóstico de gradientes — se imprime solo en el primer timestep del primer p
-    _debug_hooks = []
 
     for p_idx, p in enumerate(p_s):
         hidden_states = []
@@ -42,6 +43,7 @@ def jump_connection_parallel(
         hidden_states.append(hidden_state_input_batch)
 
         for i in range(max_timesteps):
+           
 
             if i > p - 1:
                 hidden_state_skip_p = hidden_states[i - (p - 1)]
@@ -55,9 +57,10 @@ def jump_connection_parallel(
                 lw_mat = lw_padded[j][i].double()
                 nf_mat = nf_padded[j][i].double()
 
-                edge_index_ind  = get_edge_indexes_sparse(lw_mat, threshold=0.5, device=device)
+                edge_index_ind  = get_edge_indexes_sparse(lw_mat, threshold=threshold, device=device)
                 edge_weight_ind = torch.abs(lw_mat[edge_index_ind[0], edge_index_ind[1]])
-
+                
+                
                 data_x_list.append(Data(
                     x          = nf_mat,
                     edge_index = edge_index_ind,
@@ -73,6 +76,7 @@ def jump_connection_parallel(
 
             batch_x  = Batch.from_data_list(data_x_list)
             batch_hs = Batch.from_data_list(data_hidden_state_list)
+            
 
             # ==== GATES ====
             # FIX: reemplazar sigmoid por hard sigmoid (clamp)
@@ -103,7 +107,6 @@ def jump_connection_parallel(
                 model.gconv_linear(model.modulation_gnn_hidden_state, batch_hs)
             )
             modulation = torch.tanh(torch.clamp(mod_raw, -3.0, 3.0))
-
             
             new_cell   = torch.tanh(input_gate * modulation + forget_gate * cell_state_p)
             new_hidden = output_gate * torch.tanh(new_cell)

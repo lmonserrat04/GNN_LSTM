@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GCNConv
 from jump_connection import jump_connection_parallel
-from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence, pad_packed_sequence
+from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -55,7 +55,7 @@ class DGPool(nn.Module):
 
 
 class GNN_LSTM(nn.Module):
-    def __init__(self, num_node_features, hidden_channels=128, pool_ratio=0.5, num_nodes=200):
+    def __init__(self, num_node_features,num_nodes, hidden_channels=128, pool_ratio=0.5):
         print("   ↳ Inicializando GNN_LSTM...")
         super().__init__()
 
@@ -103,7 +103,7 @@ class GNN_LSTM(nn.Module):
 
         # LSTM para procesar datos raw
         self.lstm_raw_fmri = nn.LSTM(
-            input_size=num_nodes,
+            input_size=50,
             hidden_size=hidden_channels,
             num_layers=1,
             batch_first=False
@@ -128,7 +128,13 @@ class GNN_LSTM(nn.Module):
     def forward(self, lw_matrixes_sequence_batch,node_features_data_sequence_batch, hidden_state_batch, cell_state_batch, time_series_batch):
 
         hidden_states_last_by_p = jump_connection_parallel(
-            self, [1, 2], lw_matrixes_sequence_batch, node_features_data_sequence_batch, hidden_state_batch, cell_state_batch
+            model = self, 
+            p_s = [1, 2], 
+            lw_matrixes_sequence_batch=lw_matrixes_sequence_batch, 
+            node_features_sequence_batch=node_features_data_sequence_batch,
+            hidden_state_input_batch=hidden_state_batch, 
+            cell_state_batch=cell_state_batch,
+            threshold= 0.5
         )
 
         # Ecuación 14 — suma ponderada con mapping layers
@@ -184,7 +190,7 @@ class GNN_LSTM(nn.Module):
         x = self.mlp_layer_3(x)
         return x  # [batch, 1]
 
-    def compute_loss(self, prediction_batch, label_batch, pool_loss, lambda_pool=0.01):
+    def compute_loss(self, prediction_batch, label_batch, pool_loss, lambda_pool=0):
         # BUG CORREGIDO: antes recibía pool_losses_batch tensor y hacía mean
         # Ahora pool_loss ya es scalar directo de DGPool batched
         loss_ce = F.binary_cross_entropy_with_logits(prediction_batch, label_batch)
