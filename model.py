@@ -138,7 +138,7 @@ class GNN_LSTM(nn.Module):
             node_features_sequence_batch=node_features_data_sequence_batch,
             hidden_state_input_batch=hidden_state_batch, 
             cell_state_batch=cell_state_batch,
-            threshold= 0.5
+            threshold= 0.3
         )
 
         # Ecuación 14 — suma ponderada con mapping layers
