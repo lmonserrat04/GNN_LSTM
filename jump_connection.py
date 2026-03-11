@@ -57,7 +57,7 @@ def jump_connection_parallel(
                 lw_mat = lw_padded[j][i].double()
                 nf_mat = nf_padded[j][i].double()
 
-                edge_index_ind  = get_edge_indexes_sparse(lw_mat, threshold=threshold, device=device)
+                edge_index_ind  = get_edge_indexes_sparse(lw_mat, percent = 0.20, device=device)
                 edge_weight_ind = torch.abs(lw_mat[edge_index_ind[0], edge_index_ind[1]])
                 
                 

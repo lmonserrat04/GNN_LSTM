@@ -53,8 +53,6 @@ def reduce_dimensionality(rois_time_series:dict, n_components:int):
 def create_starting_hidden_state_graph(num_nodes, batch_size, hidden_channels):
     return torch.randn(num_nodes * batch_size, hidden_channels, dtype=torch.float64) * 0.01
 
-
-
 def create_starting_cell_state(num_nodes: int,batch_size:int, hidden_channels: int):
     return torch.randn(num_nodes * batch_size, hidden_channels, dtype=torch.float64) * 0.01
 
@@ -64,10 +62,18 @@ def get_edge_indexes_fully_connected(num_nodes, device):
     edge_index = torch.cartesian_prod(idx, idx).t()
     return edge_index[:, edge_index[0] != edge_index[1]]
 
-def get_edge_indexes_sparse(dfc_matrix, threshold, device):
-    mask = torch.abs(dfc_matrix) > threshold
-    mask.fill_diagonal_(False)  # eliminar auto-conexiones
-    edge_index = mask.nonzero().t().to(device)
+def get_edge_indexes_sparse(dfc_matrix, percent, device):
+    n = dfc_matrix.shape[0]
+    k = int(n * percent)
+
+    flattened = torch.flatten(dfc_matrix)
+    _, indices = torch.topk(flattened, k=k * 2)
+
+    rows = indices // n
+    cols = indices % n
+
+    edge_index = torch.stack([rows, cols]).to(device)
+    
     return edge_index
 
 
